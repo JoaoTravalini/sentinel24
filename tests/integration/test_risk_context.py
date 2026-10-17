@@ -345,3 +345,90 @@ def test_database_backfill_remains_velocity_instead_of_mature_profile(
         result["metadata"]["context"]
         ["source_profile"]["mature"] is False
     )
+
+SP = {"latitude": -23.5505, "longitude": -46.6333}
+RIO = {"latitude": -22.9068, "longitude": -43.1729}
+
+
+def test_location_anchor_uses_latest_eligible_owner_and_device(
+    history
+):
+    payload, add, load = history
+    payload["source"]["geolocation"] = dict(RIO)
+
+    def geo_row(location=SP, **kwargs):
+        row = add(**kwargs)
+        row.raw_payload = {
+            "source": {"geolocation": dict(location)},
+        }
+        return row
+
+    geo_row(
+        location=RIO,
+        event_at=NOW - timedelta(minutes=20),
+    )
+    expected = geo_row(
+        event_at=NOW - timedelta(minutes=10),
+    )
+
+    geo_row(
+        event_at=NOW - timedelta(minutes=5),
+        status="rejected",
+    )
+    geo_row(
+        event_at=NOW - timedelta(minutes=4),
+        status="two_factor_required",
+    )
+    geo_row(
+        event_at=NOW - timedelta(minutes=3),
+        device_id=f"other-{uuid4().hex}",
+    )
+    geo_row(
+        event_at=NOW - timedelta(minutes=2),
+        source_document=document(),
+    )
+    geo_row(
+        event_at=NOW + timedelta(seconds=1),
+    )
+    geo_row(
+        event_at=NOW - timedelta(minutes=1),
+        received_at=NOW + timedelta(seconds=1),
+    )
+
+    add(event_at=NOW - timedelta(seconds=30))
+
+    current = geo_row(
+        event_at=NOW - timedelta(seconds=15),
+    )
+    current.pix_id = payload["id"]
+
+    previous = load()["previous_location"]
+
+    assert previous["key"] == str(expected.analysis_key)
+    assert (
+        previous["device_id"]
+        == payload["source"]["device_id"]
+    )
+    assert previous["geolocation"] == SP
+
+
+def test_location_anchor_ignores_expired_and_missing_coordinates(
+    history
+):
+    payload, add, load = history
+    payload["source"]["geolocation"] = dict(RIO)
+
+    expired = add(
+        event_at=NOW - timedelta(hours=24, seconds=1),
+    )
+    expired.raw_payload = {
+        "source": {"geolocation": dict(SP)},
+    }
+
+    add()
+
+    assert load()["previous_location"] is None
+
+    payload["source"].pop("geolocation")
+
+    assert load()["previous_location"] is None

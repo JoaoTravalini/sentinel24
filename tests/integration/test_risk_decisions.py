@@ -216,3 +216,95 @@ def test_prior_approved_incoming_analyses_reveal_possible_forwarding(
     assert result["metadata"]["reason_codes"] == [
         "RAPID_FORWARDING_PATTERN",
     ]
+
+SP = {"latitude": -23.5505, "longitude": -46.6333}
+RIO = {"latitude": -22.9068, "longitude": -43.1729}
+
+
+def previous_request(item):
+    previous = deepcopy(item)
+    previous["id"] = f"geo-{uuid4().hex}"
+
+    event_at = datetime.fromisoformat(
+        item["transaction_date"]
+    )
+    previous["transaction_date"] = (
+        event_at - timedelta(minutes=10)
+    ).isoformat()
+
+    previous["source"]["geolocation"] = dict(SP)
+
+    return previous
+
+
+def test_geographic_change_requires_step_up_and_is_idempotent(
+    isolated_payload
+):
+    previous = previous_request(isolated_payload)
+
+    assert create_analysis(previous)["status"] == "approved"
+
+    isolated_payload["source"]["geolocation"] = dict(RIO)
+    result = create_analysis(isolated_payload)
+
+    assert result["status"] == "two_factor_required"
+    assert result["metadata"]["risk_score"] == 35
+    assert result["metadata"]["reason_codes"] == [
+        "IMPLAUSIBLE_TRAVEL",
+    ]
+    assert (
+        result["metadata"]["context"]["geography"]
+        ["previous_analysis_key"]
+    )
+
+    repeated = send(
+        "POST",
+        "/pix/transaction",
+        json=isolated_payload,
+    )
+
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == result
+
+    changed = deepcopy(isolated_payload)
+    changed["source"]["geolocation"] = dict(SP)
+
+    conflict = send(
+        "POST",
+        "/pix/transaction",
+        json=changed,
+    )
+
+    assert conflict.status_code == 409, conflict.text
+
+    fetched = send(
+        "GET",
+        analysis_path(isolated_payload["id"]),
+    )
+
+    assert fetched.json() == result
+
+
+def test_different_devices_do_not_create_a_false_travel_alarm(
+    isolated_payload
+):
+    assert (
+        create_analysis(previous_request(isolated_payload))[
+            "status"
+        ] == "approved"
+    )
+
+    isolated_payload["source"].update(
+        device_id=f"another-{uuid4().hex}",
+        geolocation=dict(RIO),
+    )
+
+    result = create_analysis(isolated_payload)
+
+    assert result["status"] == "approved"
+    assert result["metadata"]["risk_score"] == 0
+    assert (
+        result["metadata"]["context"]["geography"][
+            "assessed"
+        ] is False
+    )

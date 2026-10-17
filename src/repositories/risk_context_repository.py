@@ -4,6 +4,7 @@ from sqlalchemy import and_, func, literal, select, union_all
 
 from database import Context
 from models import PixAnalysis
+from rules.geography import GEOGRAPHY_PARAMETERS
 
 
 class RiskContextRepository:
@@ -191,6 +192,10 @@ class RiskContextRepository:
             },
             "activity": activity,
             "source_profile": profile,
+            "previous_location": self._previous_location(
+                payload,
+                observed_at,
+            ),
         }
 
     def _source_profile(
@@ -256,4 +261,62 @@ class RiskContextRepository:
             "sample_count": len(entries),
             "truncated": len(rows) > self.PROFILE_SAMPLE_LIMIT,
             "entries": entries,
+        }
+
+    def _previous_location(
+        self,
+        payload,
+        observed_at,
+    ) -> dict | None:
+        if payload["source"].get("geolocation") is None:
+            return None
+
+        event_at = datetime.fromisoformat(
+            payload["transaction_date"]
+        )
+        document = (
+            payload["source_account"]["owner"]
+            ["document_number"]
+        )
+
+        row = (
+            self.session.query(
+                PixAnalysis.analysis_key,
+                PixAnalysis.transaction_at,
+                PixAnalysis.device_id,
+                PixAnalysis.raw_payload["source"]["geolocation"]
+                .label("geolocation"),
+            )
+            .filter(
+                PixAnalysis.source_document == document,
+                PixAnalysis.device_id
+                == payload["source"]["device_id"],
+                PixAnalysis.status == "approved",
+                PixAnalysis.transaction_at
+                >= event_at - timedelta(
+                    hours=GEOGRAPHY_PARAMETERS[
+                        "geo_lookback_hours"
+                    ]
+                ),
+                PixAnalysis.transaction_at <= event_at,
+                PixAnalysis.received_at <= observed_at,
+                PixAnalysis.pix_id != payload["id"],
+                PixAnalysis.raw_payload["source"]["geolocation"]
+                .astext.isnot(None),
+            )
+            .order_by(
+                PixAnalysis.transaction_at.desc(),
+                PixAnalysis.id.desc(),
+            )
+            .first()
+        )
+
+        if row is None:
+            return None
+
+        return {
+            "key": str(row.analysis_key),
+            "transaction_at": row.transaction_at.isoformat(),
+            "device_id": row.device_id,
+            "geolocation": row.geolocation,
         }

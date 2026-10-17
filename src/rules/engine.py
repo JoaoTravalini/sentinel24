@@ -6,9 +6,16 @@ from rules.profile import (
     evaluate_profile,
 )
 
+from rules.geography import (
+    GEOGRAPHY_PARAMETERS,
+    GEOGRAPHY_RULES,
+    evaluate_geography,
+)
+
 
 PARAMETERS = {
     **PROFILE_PARAMETERS,
+    **GEOGRAPHY_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
@@ -31,6 +38,7 @@ PARAMETERS = {
 
 RULES = {
     **PROFILE_RULES,
+    **GEOGRAPHY_RULES,
     "SOURCE_BURST_1M": ("velocity", 35),
     "SOURCE_BURST_5M": ("velocity", 45),
     "HIGH_AMOUNT": ("transaction_value", 20),
@@ -45,7 +53,7 @@ RULES = {
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.1"
+    policy_version = "sentinel24-1.2"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -174,6 +182,11 @@ class RiskEngine:
         for signal in profile["signals"]:
             add(signal["code"], signal["evidence"])
 
+        geography = evaluate_geography(payload, context)
+
+        for signal in geography["signals"]:
+            add(signal["code"], signal["evidence"])
+
         families = {}
 
         for signal in signals.values():
@@ -223,6 +236,7 @@ class RiskEngine:
                     "reference": context["reference"],
                     "activity": activity,
                     "source_profile": profile["summary"],
+                    "geography": geography["summary"],
                 },
             },
         }
