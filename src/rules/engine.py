@@ -1,7 +1,14 @@
 from datetime import datetime
 
+from rules.profile import (
+    PROFILE_PARAMETERS,
+    PROFILE_RULES,
+    evaluate_profile,
+)
+
 
 PARAMETERS = {
+    **PROFILE_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
@@ -20,7 +27,10 @@ PARAMETERS = {
     "forwarding_percent": 70,
 }
 
+
+
 RULES = {
+    **PROFILE_RULES,
     "SOURCE_BURST_1M": ("velocity", 35),
     "SOURCE_BURST_5M": ("velocity", 45),
     "HIGH_AMOUNT": ("transaction_value", 20),
@@ -35,7 +45,7 @@ RULES = {
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.0"
+    policy_version = "sentinel24-1.1"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -159,6 +169,11 @@ class RiskEngine:
                     })
 
         # Dentro de uma família, somente o maior peso contribui.
+        profile = evaluate_profile(payload, context)
+
+        for signal in profile["signals"]:
+            add(signal["code"], signal["evidence"])
+
         families = {}
 
         for signal in signals.values():
@@ -207,6 +222,7 @@ class RiskEngine:
                 "context": {
                     "reference": context["reference"],
                     "activity": activity,
+                    "source_profile": profile["summary"],
                 },
             },
         }

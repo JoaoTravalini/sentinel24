@@ -277,3 +277,71 @@ def test_unrelated_records_and_current_id_do_not_enter_context(history):
         metrics["count_24h"] == 0
         for metrics in activity.values()
     )
+
+def test_database_profile_supports_normal_and_unusual_decisions(
+    history
+):
+    from rules.engine import RiskEngine
+
+    payload, add, load = history
+
+    for index in range(12):
+        timestamp = NOW - timedelta(
+            days=2,
+            hours=index * 4,
+        )
+        add(
+            event_at=timestamp,
+            received_at=timestamp,
+        )
+
+    engine = RiskEngine()
+    normal = engine.evaluate(payload, load())
+
+    assert normal["status"] == "approved"
+    assert (
+        normal["metadata"]["context"]
+        ["source_profile"]["mature"] is True
+    )
+
+    payload["amount"] = 100_000
+    payload["source"]["device_id"] = f"new-{uuid4().hex}"
+    payload["source"]["ip"] = "203.0.113.99"
+    payload["destination_account"]["owner"][
+        "document_number"
+    ] = document()
+
+    unusual = engine.evaluate(payload, load())
+
+    assert unusual["status"] == "rejected"
+    assert unusual["metadata"]["risk_score"] == 85
+
+
+def test_database_backfill_remains_velocity_instead_of_mature_profile(
+    history
+):
+    from rules.engine import RiskEngine
+
+    payload, add, load = history
+
+    for index in range(12):
+        add(
+            event_at=NOW - timedelta(
+                days=2,
+                hours=index * 4,
+            ),
+            received_at=NOW - timedelta(seconds=10),
+        )
+
+    payload["amount"] = 100_000
+    result = RiskEngine().evaluate(payload, load())
+
+    assert result["status"] == "two_factor_required"
+    assert result["metadata"]["risk_score"] == 35
+    assert result["metadata"]["reason_codes"] == [
+        "SOURCE_BURST_1M",
+    ]
+    assert (
+        result["metadata"]["context"]
+        ["source_profile"]["mature"] is False
+    )
