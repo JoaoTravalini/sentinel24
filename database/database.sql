@@ -1,0 +1,1 @@
+-- O esquema do Sentinel24 será definido na etapa de persistência.
