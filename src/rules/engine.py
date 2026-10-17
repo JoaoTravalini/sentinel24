@@ -1,17 +1,212 @@
-class RiskEngine:
-    policy_version = "bootstrap-1"
+from datetime import datetime
 
-    def evaluate(self, payload: dict) -> dict:
-        # Temporary policy for validating persistence, not the final risk policy.
+
+PARAMETERS = {
+    "two_factor_score": 35,
+    "rejection_score": 70,
+    "minimum_rejection_families": 2,
+    "strong_dynamic_points": 30,
+    "burst_1m_count": 8,
+    "burst_5m_count": 20,
+    "high_amount_cents": 500_000,
+    "very_high_amount_cents": 2_000_000,
+    "source_recent_hours": 168,
+    "destination_recent_hours": 24,
+    "device_prior_payers_1h": 3,
+    "recipient_prior_payers_5m": 5,
+    "recipient_count_5m": 8,
+    "forwarding_prior_payers_5m": 3,
+    "forwarding_minimum_cents": 100_000,
+    "forwarding_percent": 70,
+}
+
+RULES = {
+    "SOURCE_BURST_1M": ("velocity", 35),
+    "SOURCE_BURST_5M": ("velocity", 45),
+    "HIGH_AMOUNT": ("transaction_value", 20),
+    "VERY_HIGH_AMOUNT": ("transaction_value", 30),
+    "RECENT_SOURCE_ACCOUNT": ("access_context", 15),
+    "SHARED_DEVICE": ("access_context", 30),
+    "RECENT_DESTINATION_ACCOUNT": ("counterparty", 25),
+    "RECIPIENT_FAN_IN": ("network_flow", 25),
+    "RAPID_FORWARDING_PATTERN": ("network_flow", 45),
+    "ACCOUNT_TIME_INCONSISTENCY": ("data_quality", 35),
+}
+
+
+class RiskEngine:
+    policy_version = "sentinel24-1.0"
+
+    def evaluate(self, payload: dict, context: dict) -> dict:
+        p = PARAMETERS
+        signals = {}
+        activity = context["activity"]
+        amount = payload["amount"]
+        event_at = datetime.fromisoformat(payload["transaction_date"])
+
+        same_owner = (
+            payload["source_account"]["owner"]["document_number"]
+            == payload["destination_account"]["owner"]["document_number"]
+        )
+
+        def add(code, evidence):
+            if code not in signals:
+                family, points = RULES[code]
+                signals[code] = {
+                    "code": code,
+                    "family": family,
+                    "points": points,
+                    "evidence": [],
+                }
+
+            signals[code]["evidence"].append(evidence)
+
+        # Analisa o horário informado e o horário observado pelo servidor.
+        # A solicitação atual ainda não está no histórico: acrescentamos 1.
+        for scope in ("source_received", "source_event"):
+            for window, threshold, code in (
+                ("1m", p["burst_1m_count"], "SOURCE_BURST_1M"),
+                ("5m", p["burst_5m_count"], "SOURCE_BURST_5M"),
+            ):
+                count = activity[scope][f"count_{window}"] + 1
+
+                if count >= threshold:
+                    add(code, {
+                        "scope": scope,
+                        "count_including_current": count,
+                    })
+
+        for threshold, code in (
+            (p["high_amount_cents"], "HIGH_AMOUNT"),
+            (p["very_high_amount_cents"], "VERY_HIGH_AMOUNT"),
+        ):
+            if amount >= threshold:
+                add(code, {"amount_cents": amount})
+
+        for account, hours, code in (
+            (
+                "source_account",
+                p["source_recent_hours"],
+                "RECENT_SOURCE_ACCOUNT",
+            ),
+            (
+                "destination_account",
+                p["destination_recent_hours"],
+                "RECENT_DESTINATION_ACCOUNT",
+            ),
+        ):
+            opened_at = datetime.fromisoformat(
+                payload[account]["opening_date"]
+            )
+            age_seconds = (event_at - opened_at).total_seconds()
+
+            if age_seconds < 0:
+                add("ACCOUNT_TIME_INCONSISTENCY", {
+                    "account": account,
+                })
+            elif age_seconds < hours * 3600:
+                if account == "source_account" or not same_owner:
+                    add(code, {
+                        "account": account,
+                        "age_seconds": age_seconds,
+                    })
+
+        # São pagadores distintos anteriores à solicitação atual.
+        payers = activity["device_received"]["counterparties_1h"]
+
+        if payers >= p["device_prior_payers_1h"]:
+            add("SHARED_DEVICE", {
+                "prior_distinct_payers_1h": payers,
+            })
+
+        if not same_owner:
+            for clock in ("received", "event"):
+                incoming = activity[f"destination_{clock}"]
+
+                if (
+                    incoming["counterparties_5m"]
+                    >= p["recipient_prior_payers_5m"]
+                    and incoming["count_5m"] + 1
+                    >= p["recipient_count_5m"]
+                ):
+                    add("RECIPIENT_FAN_IN", {
+                        "scope": f"destination_{clock}",
+                        "prior_distinct_payers": (
+                            incoming["counterparties_5m"]
+                        ),
+                        "count_including_current": (
+                            incoming["count_5m"] + 1
+                        ),
+                    })
+
+                incoming = activity[f"source_incoming_{clock}"]
+                total = incoming["approved_amount_cents_5m"]
+
+                if (
+                    incoming["approved_counterparties_5m"]
+                    >= p["forwarding_prior_payers_5m"]
+                    and total >= p["forwarding_minimum_cents"]
+                    and amount * 100
+                    >= total * p["forwarding_percent"]
+                ):
+                    add("RAPID_FORWARDING_PATTERN", {
+                        "scope": f"source_incoming_{clock}",
+                        "prior_approved_payers": (
+                            incoming["approved_counterparties_5m"]
+                        ),
+                        "prior_approved_amount_cents": total,
+                        "outgoing_amount_cents": amount,
+                    })
+
+        # Dentro de uma família, somente o maior peso contribui.
+        families = {}
+
+        for signal in signals.values():
+            family = signal["family"]
+            families[family] = max(
+                families.get(family, 0),
+                signal["points"],
+            )
+
+        score = min(100, sum(families.values()))
+
+        strong_dynamic = any(
+            families.get(family, 0) >= p["strong_dynamic_points"]
+            for family in (
+                "velocity",
+                "access_context",
+                "network_flow",
+            )
+        )
+
+        can_reject = (
+            score >= p["rejection_score"]
+            and len(families) >= p["minimum_rejection_families"]
+            and strong_dynamic
+        )
+
+        status = "approved"
+
+        if can_reject:
+            status = "rejected"
+        elif score >= p["two_factor_score"]:
+            status = "two_factor_required"
+
         return {
-            "status": "two_factor_required",
+            "status": status,
             "metadata": {
                 "policy_version": self.policy_version,
-                "policy_ready": False,
-                "reason_codes": ["POLICY_UNDER_CONSTRUCTION"],
-                "explanation": (
-                    "Persistence checkpoint; antifraud rules "
-                    "are not implemented yet."
-                ),
+                "policy_ready": True,
+                "risk_score": score,
+                "score_kind": "heuristic_indicator_not_probability",
+                "reason_codes": list(signals),
+                "signals": list(signals.values()),
+                "family_scores": families,
+                "strong_dynamic_signal": strong_dynamic,
+                "parameters": dict(p),
+                "context": {
+                    "reference": context["reference"],
+                    "activity": activity,
+                },
             },
         }

@@ -11,6 +11,7 @@ from errors.pix_analysis_errors import (
     PixAnalysisUnavailable,
     PixIdConflict,
 )
+from repositories.risk_context_repository import RiskContextRepository
 from repositories.pix_analysis_repository import PixAnalysisRepository
 from rules.engine import RiskEngine
 from utils.pix_payload import calculate_payload_hash, prepare_pix_payload
@@ -20,6 +21,7 @@ class PixAnalysisController(BaseController):
     def __init__(self) -> None:
         super().__init__(__name__)
         self.repository = PixAnalysisRepository(self.context)
+        self.context_repository = RiskContextRepository(self.context)
         self.engine = RiskEngine()
 
     def _existing_response(
@@ -70,7 +72,11 @@ class PixAnalysisController(BaseController):
                 return self._existing_response(existing, payload_hash)
 
             received_at = self.repository.database_time()
-            decision = self.engine.evaluate(normalized)
+            risk_context = self.context_repository.load(
+                normalized,
+                received_at,
+            )
+            decision = self.engine.evaluate(normalized, risk_context)
 
             analysis = self.repository.create(
                 raw_payload=payload,
