@@ -105,7 +105,7 @@ class SchemaHandler:
                     )
 
                 schema = SchemaCache.get_schema(schema_file_name)
-                resolver = RefResolver(f"file://{SCHEMA_PATH}/", None)
+                resolver = RefResolver(f"file://{SCHEMA_PATH}/", schema)
 
                 try:
                     validate(kwargs["payload"], schema, resolver=resolver)
@@ -153,7 +153,7 @@ class SchemaHandler:
                     )
 
                 schema = SchemaCache.get_schema(schema_file_name)
-                resolver = RefResolver(f"file://{SCHEMA_PATH}/", None)
+                resolver = RefResolver(f"file://{SCHEMA_PATH}/", schema)
                 query_params = query_params_to_dict(request.query_params, schema)
 
                 try:
