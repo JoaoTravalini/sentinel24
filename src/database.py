@@ -101,7 +101,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from constants import DATABASE_URL
 
 
-engine = create_engine(DATABASE_URL, pool_size=5, pool_recycle=600, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=5,
+    max_overflow=10,
+    pool_timeout=1,
+    pool_recycle=600,
+    pool_pre_ping=True,
+    connect_args={"connect_timeout": 2},
+    hide_parameters=True,
+)
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
