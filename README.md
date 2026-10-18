@@ -327,21 +327,23 @@ Repetir o POST retorna `200` e a mesma análise. Alterar o conteúdo mantendo o 
 
 ### Desempenho e limites
 
-O ensaio da política **`sentinel24-1.10`** utilizou `accumulated_amount`: 200 titulares independentes, concorrência oito e 20.400 registros sintéticos preparados antes da medição — 100 históricos e dois pagamentos recentes por titular.
+Os ensaios da política **`sentinel24-1.10`** utilizaram `accumulated_amount`, com um e oito clientes concorrentes. Cada execução enviou 200 solicitações de titulares independentes e preparou 20.400 registros sintéticos antes da medição: 100 históricos e dois pagamentos recentes por titular.
 
-As 200 respostas confirmaram referência de acúmulo avaliada e madura, score 35 somente em `velocity`, sinais de uma hora e 24 horas e recomendação `two_factor_required`.
+Em cada execução, as 200 respostas confirmaram referência de acúmulo avaliada e madura, score 35 somente em `velocity`, sinais de uma hora e 24 horas e recomendação `two_factor_required`.
 
-| Medida | Resultado |
-|---|---:|
-| HTTP 201 válidos | 200 |
-| Erros | 0 |
-| Decisões válidas em até 2.000 ms | 200 |
-| Duração HTTP | 12,31 s |
-| Decisões válidas/s | 16,24 |
-| p50 | 425,85 ms |
-| p95 | 883,21 ms |
-| p99 | 1.572,60 ms |
-| Máximo | 1.609,77 ms |
+| Medida | Concorrência 1 | Concorrência 8 |
+|---|---:|---:|
+| HTTP 201 válidos | 200 | 200 |
+| Erros | 0 | 0 |
+| Decisões válidas em até 2.000 ms | 200 | 200 |
+| Duração HTTP | 17,11 s | 12,31 s |
+| Decisões válidas/s | 11,69 | 16,24 |
+| p50 | 71,75 ms | 425,85 ms |
+| p95 | 131,07 ms | 883,21 ms |
+| **p99** | **203,81 ms** | **1.572,60 ms** |
+| Máximo | 971,37 ms | 1.609,77 ms |
+
+Os tempos representam a requisição HTTP completa observada pelo cliente. São duas execuções locais em ciclo fechado; cache, carga da máquina, ordem e crescimento da base também podem influenciar os resultados. Com 200 observações por execução, a amostra da cauda de latência é limitada.
 
 A preparação executou ANALYZE, sem VACUUM explícito. Dois segundos são um alvo experimental interno, não um SLA ou prazo oficial de liquidação Pix.
 
@@ -350,6 +352,7 @@ Os ensaios históricos da política 1.6 para o mesmo destinatário continuam doc
 Para medir a versão em execução:
 
 ```bash
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 1 --workload accumulated_amount --history 100
 PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload accumulated_amount --history 100
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload independent
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload same_payer
