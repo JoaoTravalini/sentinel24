@@ -11,7 +11,7 @@ PROFILE_PARAMETERS = {
 }
 
 PROFILE_RULES = {
-    "PROFILE_AMOUNT_SPIKE": ("transaction_value", 35),
+    "PROFILE_AMOUNT_SPIKE": ("transaction_value", 25),
     "DEVICE_NOT_IN_RECENT_PROFILE": ("access_context", 30),
     "IP_NOT_IN_RECENT_PROFILE": ("access_context", 10),
     "CHANNEL_NOT_IN_RECENT_PROFILE": ("access_context", 10),

@@ -6,7 +6,7 @@ Motor de análise de risco para solicitações Pix, desenvolvido para o desafio 
 
 ## Como o motor de decisão funciona
 
-O Sentinel24 recebe uma solicitação Pix, consulta o histórico disponível, avalia sinais de risco e devolve uma recomendação: `approved`, `two_factor_required` ou `rejected`.
+O Sentinel24 recebe uma solicitação Pix, consulta o histórico disponível e devolve uma recomendação: `approved`, `two_factor_required` ou `rejected`.
 
 O processamento é síncrono: a decisão é devolvida na própria resposta do POST, depois de persistida no PostgreSQL. O serviço recomenda uma ação; não executa transferências nem realiza a autenticação de segundo fator.
 
@@ -17,13 +17,13 @@ A aplicação utiliza Python, FastAPI, SQLAlchemy e PostgreSQL, executados com D
 - **Resources:** recebem as requisições HTTP e definem as respostas.
 - **Schemas e normalização:** validam o formato e padronizam documentos, datas, IP e demais campos.
 - **Controllers:** coordenam idempotência, consulta do contexto, avaliação e persistência.
-- **Repositories:** executam as consultas e os bloqueios no banco.
-- **Rules:** calculam os sinais e a decisão, sem realizar consultas ao banco.
+- **Repositories:** executam consultas e bloqueios no banco.
+- **Rules:** calculam sinais e decisões sem consultar diretamente o banco.
 - **DTOs:** organizam o contrato de saída.
 
 O contexto histórico inclui frequência de solicitações, relacionamento entre titulares, uso de dispositivos, perfil recente do pagador e localização anterior disponível.
 
-As análises são agrupadas por documento do titular. O contrato não fornece um identificador completo da instituição da conta de origem; portanto, esse histórico não representa necessariamente uma única conta bancária.
+As análises são agrupadas por documento do titular. Como o contrato não fornece um identificador completo da instituição da conta de origem, esse histórico não representa necessariamente uma única conta bancária.
 
 ### Idempotência e concorrência
 
@@ -35,9 +35,9 @@ O campo `id` identifica a solicitação Pix:
 
 O conteúdo normalizado recebe um hash SHA-256. A comparação considera equivalências de representação, como documentos com ou sem máscara.
 
-Antes de consultar o histórico e inserir uma nova análise, a aplicação obtém bloqueios transacionais associados ao identificador Pix, aos titulares envolvidos e ao dispositivo. Os bloqueios são adquiridos em ordem determinística.
+Antes de consultar o histórico e inserir uma análise, a aplicação obtém bloqueios transacionais associados ao identificador Pix, aos titulares envolvidos e ao dispositivo. Os bloqueios são adquiridos em ordem determinística.
 
-Isso impede que solicitações relacionadas consultem simultaneamente o mesmo histórico e tomem decisões ignorando umas às outras. Depois de adquirir os bloqueios, a aplicação verifica novamente a existência do `id`.
+Assim, solicitações relacionadas não consultam simultaneamente o mesmo histórico ignorando umas às outras. Depois de adquirir os bloqueios, a aplicação verifica novamente a existência do `id`.
 
 O PostgreSQL mantém uma restrição única sobre `pix_id` como proteção adicional. Os bloqueios são liberados no commit ou rollback.
 
@@ -45,11 +45,13 @@ O PostgreSQL mantém uma restrição única sobre `pix_id` como proteção adici
 
 Cada análise registra identificador público, identificador Pix, valor em centavos, datas, campos utilizados nas consultas, payload recebido, decisão e versão da política.
 
-A resposta contém os motivos, evidências, pontuação por família, parâmetros e um resumo do contexto utilizado. Repetir uma solicitação recupera a decisão original, inclusive sua versão de política.
+A resposta inclui motivos, evidências, pontuação por família, parâmetros e resumo do contexto utilizado.
+
+Uma repetição recupera a decisão original, inclusive sua versão de política. Atualizar a política não reescreve análises anteriores.
 
 ## Regras
 
-Política atual: **`sentinel24-1.2`**.
+Política atual: **`sentinel24-1.3`**.
 
 Os pesos são heurísticos e representam força relativa dos sinais. Não são probabilidades de fraude e não foram calibrados com uma base rotulada de transações reais.
 
@@ -57,25 +59,25 @@ Os pesos são heurísticos e representam força relativa dos sinais. Não são p
 |---|---|---|---|
 | Frequência em um minuto | Muitas solicitações do mesmo titular em uma janela curta. | Pelo menos 8 solicitações, incluindo a atual; 35 pontos em `velocity`. | Identificar rajadas sem depender de valores elevados. |
 | Frequência em cinco minutos | Volume persistente de solicitações do mesmo titular. | Pelo menos 20 solicitações, incluindo a atual; 45 pontos em `velocity`. | Complementar a janela curta e observar atividade sustentada. |
-| Valor elevado | Valor absoluto acima do primeiro patamar. | A partir de R$ 5.000; 20 pontos em `transaction_value`. | Considerar a exposição financeira sem rejeitar apenas pelo valor. |
+| Valor elevado | Valor absoluto acima do primeiro patamar. | A partir de R$ 5.000; 20 pontos em `transaction_value`. | Considerar a exposição financeira sem intervir apenas pelo valor. |
 | Valor muito elevado | Valor absoluto acima do segundo patamar. | A partir de R$ 20.000; 30 pontos em `transaction_value`. | Aumentar a cautela para maior exposição financeira. |
-| Valor fora do perfil | Valor muito superior à mediana do perfil recente. | Perfil maduro, valor de pelo menos R$ 1.000 e pelo menos 5 vezes a mediana; 35 pontos em `transaction_value`. | Comparar o valor com o comportamento observado do titular. |
-| Conta de origem recente | Pouco tempo entre abertura e solicitação. | Menos de 7 dias; 15 pontos em `access_context`. | Tratar a pouca antiguidade como sinal complementar, sem bloquear isoladamente novos clientes. |
-| Dispositivo compartilhado | Dispositivo associado a vários titulares pagadores. | Pelo menos 3 titulares distintos anteriores em uma hora; 30 pontos em `access_context`. | Observar possível concentração de acessos sem concluir que compartilhamento seja necessariamente fraude. |
+| Valor fora do perfil | Valor muito superior à mediana do perfil recente. | Perfil maduro, valor de pelo menos R$ 1.000 e pelo menos 5 vezes a mediana; 25 pontos em `transaction_value`. | Registrar o desvio sem exigir segundo fator apenas por uma despesa excepcional. |
+| Conta de origem recente | Pouco tempo entre abertura e solicitação. | Menos de 7 dias; 15 pontos em `access_context`. | Considerar pouca antiguidade como sinal complementar, sem bloquear isoladamente novos clientes. |
+| Dispositivo compartilhado | Dispositivo associado a vários titulares pagadores. | Pelo menos 3 titulares distintos anteriores em uma hora; 30 pontos em `access_context`. | Observar concentração de acessos sem concluir que compartilhamento seja necessariamente fraude. |
 | Dispositivo fora do perfil | Dispositivo ausente da amostra recente do titular. | Perfil maduro; 30 pontos em `access_context`. | Identificar mudança relevante no meio de acesso. |
-| IP fora do perfil | IP ausente da amostra recente. | Perfil maduro; 10 pontos em `access_context`. | Usar mudança de rede como evidência fraca, pois pode ocorrer legitimamente. |
+| IP fora do perfil | IP ausente da amostra recente. | Perfil maduro; 10 pontos em `access_context`. | Tratar mudança de rede como evidência fraca, pois pode ocorrer legitimamente. |
 | Canal fora do perfil | Canal ausente da amostra recente. | Perfil maduro; 10 pontos em `access_context`. | Observar mudança de comportamento sem dar peso elevado ao canal isolado. |
 | Mudança combinada de acesso | Dispositivo novo acompanhado de IP ou canal novo. | Perfil maduro; 35 pontos em `access_context`. | Dar mais relevância à combinação do que às mudanças fracas isoladas. |
 | Destino recente | Conta de destino aberta recentemente. | Menos de 24 horas; 25 pontos em `counterparty`. Não aplicado entre titulares iguais. | Considerar destinatários de pouca antiguidade como contexto adicional. |
 | Destinatário fora do perfil | Titular destinatário ausente da amostra recente. | Perfil maduro; 15 pontos em `counterparty`. Não aplicado entre titulares iguais. | Reconhecer novidade no relacionamento sem impedir novos pagamentos legítimos. |
-| Concentração de entradas | Vários pagadores direcionando solicitações ao mesmo destinatário. | Em 5 minutos: pelo menos 5 pagadores distintos anteriores e 8 solicitações incluindo a atual; 25 pontos em `network_flow`. | Observar concentração, mantendo peso insuficiente para exigir segundo fator isoladamente, pois comerciantes também recebem de muitos clientes. |
-| Possível repasse rápido | Solicitação de saída elevada em relação a entradas anteriormente aprovadas na análise. | Em 5 minutos: pelo menos 3 pagadores distintos, soma de pelo menos R$ 1.000 e saída de pelo menos 70% dessa soma; 45 pontos em `network_flow`. | Identificar um possível padrão de concentração e repasse. Aprovação de análise não comprova liquidação financeira. |
+| Concentração de entradas | Vários pagadores direcionando solicitações ao mesmo destinatário. | Em 5 minutos: pelo menos 5 pagadores distintos anteriores e 8 solicitações incluindo a atual; 25 pontos em `network_flow`. | Observar concentração com peso insuficiente para exigir segundo fator isoladamente, pois comerciantes também recebem de muitos clientes. |
+| Possível repasse rápido | Solicitação de saída elevada em relação a entradas anteriormente aprovadas na análise. | Em 5 minutos: pelo menos 3 pagadores distintos, soma de pelo menos R$ 1.000 e saída de pelo menos 70% dessa soma; 45 pontos em `network_flow`. | Identificar possível concentração e repasse. Aprovação de análise não comprova liquidação financeira. |
 | Abertura posterior à transação | Data de abertura de uma das contas posterior à data informada da solicitação. | 35 pontos em `data_quality`. | Sinalizar inconsistência temporal nos dados recebidos. |
-| Deslocamento geográfico incompatível | Distância e intervalo entre localizações sugerem deslocamento improvável. | Mesmo titular e dispositivo; referência anterior aprovada em até 24 horas; distância mínima de 100 km; desconto de 30 km e acréscimo de 120 segundos; velocidade resultante acima de 1.000 km/h; 35 pontos em `access_context`. | Usar uma margem de tolerância antes de sinalizar incompatibilidade. Não presume que o GPS recebido seja uma prova confiável de localização. |
+| Deslocamento geográfico incompatível | Distância e intervalo entre localizações sugerem deslocamento improvável. | Mesmo titular e dispositivo; referência anterior aprovada em até 24 horas; distância mínima de 100 km; desconto de 30 km e acréscimo de 120 segundos; velocidade resultante acima de 1.000 km/h; 35 pontos em `access_context`. | Aplicar tolerâncias antes de sinalizar incompatibilidade. O GPS recebido não é tratado como prova confiável de localização. |
 
 ### Construção do perfil
 
-O perfil considera até 100 análises anteriormente aprovadas nos últimos 30 dias. Os cinco minutos imediatamente anteriores à solicitação ficam fora dessa amostra, reduzindo a influência de uma rajada sobre o próprio perfil.
+O perfil considera até 100 análises anteriormente aprovadas nos últimos 30 dias. Os cinco minutos imediatamente anteriores à solicitação ficam fora da amostra, reduzindo a influência de uma rajada sobre o próprio perfil.
 
 Para ser considerado maduro, o perfil precisa reunir:
 
@@ -87,13 +89,31 @@ Sem esses requisitos, as regras dependentes de perfil não pontuam. A ausência 
 
 A amostra é limitada e não representa todo o histórico do cliente. Análises aprovadas também não constituem confirmação de legitimidade.
 
+### Despesas excepcionais e falsos positivos
+
+Uma pessoa que costuma fazer pagamentos pequenos pode realizar uma despesa maior, como aluguel, sem que isso represente fraude.
+
+Na política `1.3`, o desvio de valor contribui com 25 pontos: sozinho, fica abaixo do limite para segundo fator, mas permanece registrado na explicação.
+
+Exemplos com perfil maduro e sem outros sinais:
+
+| Cenário | Score | Recomendação |
+|---|---:|---|
+| Histórico de R$ 50 e pagamento de R$ 1.500 para destinatário habitual, com acesso habitual. | 25 | `approved` |
+| Mesmo pagamento para destinatário fora do perfil. | 40 | `two_factor_required` |
+| Desvio de valor, mudança combinada de acesso e destinatário fora do perfil. | 75 | `rejected` |
+
+A mudança reduz intervenções provocadas apenas por diferença de valor. Não implementa reconhecimento de aluguel ou recorrência mensal.
+
+O contrato não fornece confirmação de conclusão do segundo fator. Portanto, uma solicitação anterior com `two_factor_required` não é tratada como pagamento confirmado ou prova de legitimidade.
+
 ### Janelas temporais e geografia
 
 As regras de frequência e fluxo avaliam separadamente o horário informado da transação e o horário observado pelo servidor. Evidências dos dois relógios não duplicam o peso da mesma regra.
 
 A solicitação atual ainda não está persistida durante a avaliação. Ela é acrescentada às contagens quando a condição exige sua inclusão; contagens de titulares distintos anteriores não recebem esse acréscimo automaticamente.
 
-A comparação geográfica utiliza distância de Haversine entre coordenadas, sem depender de cidades específicas ou de serviços externos. Sem localização atual ou referência anterior adequada, a regra não pontua.
+A comparação geográfica utiliza distância de Haversine entre coordenadas, sem depender de cidades específicas ou serviços externos. Sem localização atual ou referência anterior adequada, a regra não pontua.
 
 ## Como as regras viram decisão
 
@@ -118,7 +138,7 @@ A decisão segue esta ordem:
 2. **`two_factor_required`:** score de pelo menos 35, quando os critérios de rejeição não foram atendidos.
 3. **`approved`:** demais casos.
 
-Valor elevado e conta de destino recente, por exemplo, não bastam isoladamente para rejeitar uma solicitação. O segundo fator funciona como recomendação intermediária diante de risco ou incerteza.
+O segundo fator é uma recomendação intermediária diante de risco ou incerteza. O motor não executa essa autenticação.
 
 ### Contrato HTTP
 
@@ -137,7 +157,7 @@ A resposta de sucesso possui exatamente três campos no primeiro nível:
   "key": "UUID da análise",
   "status": "approved",
   "metadata": {
-    "policy_version": "sentinel24-1.2",
+    "policy_version": "sentinel24-1.3",
     "risk_score": 0
   }
 }
@@ -220,6 +240,8 @@ Testes unitários e de integração, com API e banco em execução:
 python -m pytest -q tests/unit tests/integration
 ```
 
+A suíte unitária/de integração possui 112 testes.
+
 Teste E2E de recuperação após indisponibilidade:
 
 ```bash
@@ -228,13 +250,11 @@ python -m pytest -v tests/e2e/test_database_recovery.py
 
 O E2E interrompe temporariamente o banco do projeto e o inicia novamente. Execute-o separadamente dos demais testes e benchmarks.
 
-Na verificação registrada em 17/10/2026, passaram 108 testes unitários/de integração e um teste E2E.
-
-A cobertura inclui validação, normalização, idempotência, concorrência, composição das regras, limites temporais, perfil, geografia, contenção de bloqueios e recuperação do banco.
+A cobertura inclui validação, normalização, idempotência, concorrência, composição das regras, limites temporais, perfil, despesas excepcionais, geografia, contenção de bloqueios e recuperação do banco.
 
 ### Experimentar a API
 
-O exemplo abaixo utiliza os valores padrão de configuração:
+O exemplo utiliza os valores padrão de configuração:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3000/pix/transaction \
@@ -279,7 +299,7 @@ curl -i http://127.0.0.1:3000/pix/transaction/pix-demo-001 \
 
 Repetir o POST sem alterações retorna `200` e a mesma análise. Alterar o conteúdo mantendo o identificador retorna `409`. Para solicitar uma nova análise, utilize outro `id`.
 
-A recomendação pode variar conforme o histórico já existente na base.
+A recomendação pode variar conforme o histórico já existente na base. Se o identificador já possuir uma análise de política anterior, sua repetição continuará retornando aquela decisão original.
 
 ### Desempenho
 
@@ -292,7 +312,9 @@ PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --
 
 Os cenários com histórico preparam registros sintéticos antes da medição e verificam se o perfil maduro e a comparação geográfica foram avaliados.
 
-Nos seis ensaios locais registrados, 1.200 solicitações retornaram decisões válidas dentro do alvo interno de 2.000 ms, sem erros reportados. Esse alvo é experimental: não representa garantia de latência nem capacidade de produção.
+Os seis ensaios locais registrados foram executados com a política `sentinel24-1.2`: 1.200 solicitações retornaram decisões válidas dentro do alvo interno de 2.000 ms, sem erros reportados.
+
+Esses resultados são históricos e não representam uma medição da política `1.3`. O alvo experimental não é garantia de latência nem demonstra capacidade de produção.
 
 Método, resultados completos e limitações estão em [docs/performance.md](docs/performance.md).
 

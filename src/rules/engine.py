@@ -53,7 +53,7 @@ RULES = {
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.2"
+    policy_version = "sentinel24-1.3"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS

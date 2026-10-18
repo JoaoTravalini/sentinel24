@@ -314,7 +314,7 @@ def test_database_profile_supports_normal_and_unusual_decisions(
     unusual = engine.evaluate(payload, load())
 
     assert unusual["status"] == "rejected"
-    assert unusual["metadata"]["risk_score"] == 85
+    assert unusual["metadata"]["risk_score"] == 75
 
 
 def test_database_backfill_remains_velocity_instead_of_mature_profile(
