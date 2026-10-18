@@ -1,5 +1,7 @@
 # Ensaios locais de desempenho
 
+A política atual do código é `sentinel24-1.8`. As medições abaixo pertencem às versões indicadas em cada seção; a mais recente medida aqui é a `1.6`. Não representam uma nova medição da `1.8`.
+
 Medições realizadas em 17 e 18/10/2026, em Windows com Docker Desktop, PostgreSQL 16 e API Uvicorn com `--reload`.
 
 Alvo experimental interno: decisão válida em até 2.000 ms. Esse alvo não representa um SLA garantido nem um prazo oficial de liquidação Pix.
