@@ -314,7 +314,7 @@ def test_api_exports_frequency_limits_and_policy_version(
 ):
     result = create_analysis(isolated_payload)
 
-    assert result["metadata"]["policy_version"] == "sentinel24-1.4"
+    assert result["metadata"]["policy_version"] == "sentinel24-1.5"
 
     frequency = result["metadata"]["context"]["frequency_profile"]
 
@@ -324,3 +324,8 @@ def test_api_exports_frequency_limits_and_policy_version(
             "1m": 8,
             "5m": 20,
         }
+    device = result["metadata"]["context"]["device_profile"]
+
+    assert device["assessed"] is False
+    assert device["prior_distinct_payers_1h"] == 0
+    assert device["unfamiliar_payers_1h"] == 0

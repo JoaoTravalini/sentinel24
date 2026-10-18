@@ -96,4 +96,15 @@ class PixAnalysis(Base):
             "received_at",
             "id",
         ),
+        Index(
+            "pix_analyses_device_context_idx",
+            "device_id",
+            "received_at",
+            postgresql_include=[
+                "source_document",
+                "status",
+                "amount",
+                "pix_id",
+            ],
+        ),
     )

@@ -13,19 +13,15 @@ from dotenv import load_dotenv
 import requests
 
 
-load_dotenv(
-    Path(__file__).resolve().parents[1] / ".env"
-)
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 
 def positive_int(value):
     number = int(value)
-
     if number < 1:
         raise argparse.ArgumentTypeError(
             "Use um inteiro maior que zero."
         )
-
     return number
 
 
@@ -65,9 +61,10 @@ def build_payload(now, payer, destination, device):
 
 def percentile(values, fraction):
     ordered = sorted(values)
-    position = ceil(len(ordered) * fraction) - 1
-
-    return round(ordered[position], 2)
+    return round(
+        ordered[ceil(len(ordered) * fraction) - 1],
+        2,
+    )
 
 
 def main():
@@ -75,30 +72,21 @@ def main():
         description="Ensaio local de carga da API Pix."
     )
     parser.add_argument(
-        "--requests",
-        type=positive_int,
-        default=200,
+        "--requests", type=positive_int, default=200
     )
     parser.add_argument(
-        "--concurrency",
-        type=positive_int,
-        default=8,
+        "--concurrency", type=positive_int, default=8
     )
     parser.add_argument(
         "--workload",
-        choices=("independent", "same_payer"),
+        choices=("independent", "same_payer", "shared_device"),
         default="independent",
     )
     parser.add_argument(
-        "--budget-ms",
-        type=positive_int,
-        default=2000,
+        "--budget-ms", type=positive_int, default=2000
     )
     parser.add_argument(
-        "--history",
-        type=int,
-        choices=(0, 12, 100),
-        default=0,
+        "--history", type=int, choices=(0, 12, 100), default=0
     )
     args = parser.parse_args()
 
@@ -108,9 +96,8 @@ def main():
     )
     headers = {
         "INTERNAL-TOKEN": os.environ.get(
-            "INTERNAL_TOKEN",
-            "default_token",
-        ),
+            "INTERNAL_TOKEN", "default_token"
+        )
     }
 
     with requests.Session() as session:
@@ -126,15 +113,18 @@ def main():
     payloads = []
 
     for _ in range(args.requests):
-        shared = args.workload == "same_payer"
+        same_payer = args.workload == "same_payer"
+        same_device = args.workload in (
+            "same_payer", "shared_device"
+        )
 
         payloads.append(build_payload(
             now,
-            shared_payer if shared else document(),
+            shared_payer if same_payer else document(),
             document(),
             (
                 shared_device
-                if shared
+                if same_device
                 else f"bench-device-{uuid4().hex}"
             ),
         ))
@@ -142,15 +132,9 @@ def main():
     history_rows = 0
 
     if args.history:
-        from benchmark_history import (
-            context_ready,
-            prepare_history,
-        )
+        from benchmark_history import context_ready, prepare_history
 
-        history_rows = prepare_history(
-            payloads,
-            args.history,
-        )
+        history_rows = prepare_history(payloads, args.history)
 
     def worker(items):
         results = []
@@ -164,6 +148,7 @@ def main():
                 decision = None
                 error = None
                 policy_version = None
+                device_history_checked = False
 
                 try:
                     response = session.post(
@@ -177,35 +162,27 @@ def main():
                         error = f"HTTP_{response.status_code}"
                     else:
                         body = response.json()
-
                         valid = (
                             isinstance(body, dict)
                             and set(body) == {
-                                "key", "status", "metadata",
+                                "key", "status", "metadata"
                             }
                             and body["status"] in (
                                 "approved",
                                 "two_factor_required",
                                 "rejected",
                             )
-                            and isinstance(
-                                body["metadata"],
-                                dict,
-                            )
+                            and isinstance(body["metadata"], dict)
                             and body["metadata"].get(
                                 "policy_ready"
                             ) is True
                             and isinstance(
-                                body["metadata"].get(
-                                    "policy_version"
-                                ),
+                                body["metadata"].get("policy_version"),
                                 str,
                             )
                             and (
                                 not args.history
-                                or context_ready(
-                                    body["metadata"]
-                                )
+                                or context_ready(body["metadata"])
                             )
                         )
 
@@ -213,6 +190,11 @@ def main():
                             decision = body["status"]
                             policy_version = (
                                 body["metadata"]["policy_version"]
+                            )
+                            device_history_checked = (
+                                body["metadata"].get("context", {})
+                                .get("device_profile", {})
+                                .get("assessed") is True
                             )
                         else:
                             error = "invalid_contract"
@@ -230,14 +212,12 @@ def main():
                     decision,
                     error,
                     policy_version,
+                    device_history_checked,
                 ))
 
         return results
 
-    concurrency = min(
-        args.concurrency,
-        args.requests,
-    )
+    concurrency = min(args.concurrency, args.requests)
     chunks = [
         payloads[index::concurrency]
         for index in range(concurrency)
@@ -245,9 +225,7 @@ def main():
 
     start = perf_counter()
 
-    with ThreadPoolExecutor(
-        max_workers=concurrency
-    ) as executor:
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
         results = [
             row
             for batch in executor.map(worker, chunks)
@@ -261,32 +239,27 @@ def main():
         "workload": args.workload,
         "history_per_payer": args.history,
         "prepared_history_rows": history_rows,
+        "history_statistics_refreshed": bool(args.history),
         "requires_mature_profile_and_geo": bool(args.history),
+        "device_history_checks": sum(row[5] for row in results),
         "requests": args.requests,
         "concurrency": concurrency,
         "duration_s": round(duration, 2),
         "valid_decisions_rps": round(
-            sum(row[2] is not None for row in results)
-            / duration,
+            sum(row[2] is not None for row in results) / duration,
             2,
         ),
         "policy_versions": dict(Counter(
-            row[4]
-            for row in results
-            if row[4] is not None
+            row[4] for row in results if row[4] is not None
         )),
         "http_statuses": dict(Counter(
             row[1] for row in results
         )),
         "decisions": dict(Counter(
-            row[2]
-            for row in results
-            if row[2] is not None
+            row[2] for row in results if row[2] is not None
         )),
         "errors": dict(Counter(
-            row[3]
-            for row in results
-            if row[3] is not None
+            row[3] for row in results if row[3] is not None
         )),
         "latency_ms": {
             "p50": percentile(latencies, 0.50),
@@ -298,7 +271,7 @@ def main():
         "budget_ms": args.budget_ms,
         "valid_within_budget": sum(
             1
-            for elapsed, _, decision, error, _ in results
+            for elapsed, _, decision, error, _, _ in results
             if (
                 error is None
                 and decision is not None
@@ -308,12 +281,7 @@ def main():
     }
 
     print(json.dumps(report, indent=2))
-
-    return (
-        1
-        if any(row[3] is not None for row in results)
-        else 0
-    )
+    return 1 if any(row[3] is not None for row in results) else 0
 
 
 if __name__ == "__main__":

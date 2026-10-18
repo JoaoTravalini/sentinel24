@@ -270,7 +270,7 @@ def test_rent_sized_payment_needs_context_beyond_value(
     assert result["status"] == status
     assert result["metadata"]["risk_score"] == score
     assert "PROFILE_AMOUNT_SPIKE" in result["metadata"]["reason_codes"]
-    assert result["metadata"]["policy_version"] == "sentinel24-1.4"
+    assert result["metadata"]["policy_version"] == "sentinel24-1.5"
 
 
 def test_absolute_and_relative_amount_signals_use_family_maximum(profiled):
@@ -287,3 +287,28 @@ def test_absolute_and_relative_amount_signals_use_family_maximum(profiled):
         "VERY_HIGH_AMOUNT",
         "PROFILE_AMOUNT_SPIKE",
     } <= set(result["metadata"]["reason_codes"])
+
+@pytest.mark.parametrize("total,score,status", [
+    (3, 15, "approved"),
+    (6, 45, "two_factor_required"),
+])
+def test_shared_device_risk_depends_on_unfamiliar_relationships(
+    profiled, total, score, status
+):
+    profiled[1]["activity"]["device_received"][
+        "counterparties_1h"
+    ] = total
+
+    profiled[1]["device_profile"] = {
+        "assessed": True,
+        "familiar_payers_1h": 3,
+    }
+
+    profiled[0]["destination_account"]["owner"][
+        "document_number"
+    ] = "11111111111"
+
+    result = decide(profiled)
+
+    assert result["status"] == status
+    assert result["metadata"]["risk_score"] == score

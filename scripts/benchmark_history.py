@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import os
 from uuid import uuid4
 
-from sqlalchemy import insert
+from sqlalchemy import insert, text
 
 
 os.environ.setdefault(
@@ -106,5 +106,6 @@ def prepare_history(payloads, depth):
 
     with SessionLocal.begin() as session:
         session.execute(insert(PixAnalysis), rows)
+        session.execute(text("ANALYZE pix_analyses"))
 
     return len(rows)

@@ -4,9 +4,11 @@ from sqlalchemy import and_, func, literal, select, text, union_all
 
 from database import Context
 from models import PixAnalysis
-from rules.geography import GEOGRAPHY_PARAMETERS
 
+from rules.geography import GEOGRAPHY_PARAMETERS
 from rules.velocity import FREQUENCY_PARAMETERS
+from rules.device import DEVICE_PARAMETERS
+
 
 
 class RiskContextRepository:
@@ -195,10 +197,99 @@ class RiskContextRepository:
             "activity": activity,
             "source_profile": profile,
             "frequency_profile": self._frequency_profile(payload, observed_at),
+            "device_profile": self._device_profile(
+                payload,
+                observed_at,
+                activity["device_received"]["counterparties_1h"],
+            ),
             "previous_location": self._previous_location(
                 payload,
                 observed_at,
             ),
+        }
+
+    def _device_profile(
+        self, payload: dict, observed_at: datetime, prior_payers: int
+    ) -> dict:
+        p = DEVICE_PARAMETERS
+
+        if prior_payers < p["device_prior_payers_1h"]:
+            return {"assessed": False, "familiar_payers_1h": 0}
+
+        minimum_days = p["device_relationship_minimum_days"]
+
+        familiar = self.session.execute(
+            text("""
+                WITH device_events AS (
+                    SELECT
+                        source_document,
+                        received_at,
+                        received_at >= :recent_start AS is_recent,
+                        status = 'approved'
+                            AND received_at >= :history_start
+                            AND received_at < :history_end AS is_reference
+                    FROM pix_analyses
+                    WHERE device_id = :device
+                      AND received_at >= LEAST(
+                          :history_start, :recent_start
+                      )
+                      AND received_at <= :observed_at
+                      AND pix_id <> :pix_id
+                ), per_day AS (
+                    SELECT
+                        source_document,
+                        (received_at AT TIME ZONE 'UTC')::date AS day,
+                        BOOL_OR(is_recent) AS recently_active,
+                        BOOL_OR(is_reference) AS reference_day,
+                        MIN(received_at) FILTER (
+                            WHERE is_reference
+                        ) AS first_seen,
+                        MAX(received_at) FILTER (
+                            WHERE is_reference
+                        ) AS last_seen
+                    FROM device_events
+                    GROUP BY
+                        source_document,
+                        (received_at AT TIME ZONE 'UTC')::date
+                ), per_payer AS (
+                    SELECT
+                        source_document,
+                        BOOL_OR(recently_active) AS recently_active,
+                        COUNT(*) FILTER (
+                            WHERE reference_day
+                        ) AS reference_days,
+                        MIN(first_seen) AS first_seen,
+                        MAX(last_seen) AS last_seen
+                    FROM per_day
+                    GROUP BY source_document
+                )
+                SELECT COUNT(*)
+                FROM per_payer
+                WHERE recently_active
+                  AND reference_days >= :minimum_days
+                  AND EXTRACT(
+                      EPOCH FROM (last_seen - first_seen)
+                  ) >= :minimum_span
+            """),
+            {
+                "device": payload["source"]["device_id"],
+                "pix_id": payload["id"],
+                "recent_start": observed_at - timedelta(hours=1),
+                "observed_at": observed_at,
+                "history_start": observed_at - timedelta(
+                    days=p["device_history_days"]
+                ),
+                "history_end": observed_at - timedelta(
+                    hours=p["device_history_exclusion_hours"]
+                ),
+                "minimum_days": minimum_days,
+                "minimum_span": (minimum_days - 1) * 24 * 3600,
+            },
+        ).scalar_one()
+
+        return {
+            "assessed": True,
+            "familiar_payers_1h": int(familiar),
         }
 
     def _frequency_profile(

@@ -13,11 +13,13 @@ from rules.geography import (
 )
 
 from rules.velocity import FREQUENCY_PARAMETERS, evaluate_velocity
+from rules.device import DEVICE_PARAMETERS, DEVICE_RULES, evaluate_device
 
 PARAMETERS = {
-    **FREQUENCY_PARAMETERS,
     **PROFILE_PARAMETERS,
     **GEOGRAPHY_PARAMETERS,
+    **DEVICE_PARAMETERS,
+    **FREQUENCY_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
@@ -26,7 +28,6 @@ PARAMETERS = {
     "very_high_amount_cents": 2_000_000,
     "source_recent_hours": 168,
     "destination_recent_hours": 24,
-    "device_prior_payers_1h": 3,
     "recipient_prior_payers_5m": 5,
     "recipient_count_5m": 8,
     "forwarding_prior_payers_5m": 3,
@@ -39,12 +40,12 @@ PARAMETERS = {
 RULES = {
     **PROFILE_RULES,
     **GEOGRAPHY_RULES,
+    **DEVICE_RULES,
     "SOURCE_BURST_1M": ("velocity", 35),
     "SOURCE_BURST_5M": ("velocity", 45),
     "HIGH_AMOUNT": ("transaction_value", 20),
     "VERY_HIGH_AMOUNT": ("transaction_value", 30),
     "RECENT_SOURCE_ACCOUNT": ("access_context", 15),
-    "SHARED_DEVICE": ("access_context", 30),
     "RECENT_DESTINATION_ACCOUNT": ("counterparty", 25),
     "RECIPIENT_FAN_IN": ("network_flow", 25),
     "RAPID_FORWARDING_PATTERN": ("network_flow", 45),
@@ -53,7 +54,7 @@ RULES = {
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.4"
+    policy_version = "sentinel24-1.5"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -121,13 +122,10 @@ class RiskEngine:
                         "age_seconds": age_seconds,
                     })
 
-        # São pagadores distintos anteriores à solicitação atual.
-        payers = activity["device_received"]["counterparties_1h"]
+        device = evaluate_device(context, p)
 
-        if payers >= p["device_prior_payers_1h"]:
-            add("SHARED_DEVICE", {
-                "prior_distinct_payers_1h": payers,
-            })
+        for signal in device["signals"]:
+            add(signal["code"], signal["evidence"])
 
         if not same_owner:
             for clock in ("received", "event"):
@@ -229,6 +227,7 @@ class RiskEngine:
                     "activity": activity,
                     "source_profile": profile["summary"],
                     "frequency_profile": velocity["summary"],
+                    "device_profile": device["summary"],
                     "geography": geography["summary"],
                 },
             },

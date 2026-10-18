@@ -59,3 +59,7 @@ CREATE INDEX pix_analyses_destination_activity_idx
 
 CREATE INDEX pix_analyses_device_activity_idx
     ON pix_analyses (device_id, received_at, id);
+
+CREATE INDEX pix_analyses_device_context_idx
+    ON pix_analyses (device_id, received_at)
+    INCLUDE (source_document, status, amount, pix_id);
