@@ -2,11 +2,11 @@
 
 **Integrantes:** João Paulo Motta Travalini · Bruno Bianchi Raiado
 
-Motor de análise de risco de solicitações Pix, desenvolvido para o desafio final do Bootcamp QI Tech 2026. Política atual: **`sentinel24-1.8`**.
+Motor de análise de risco de solicitações Pix, desenvolvido para o desafio final do Bootcamp QI Tech 2026. Política atual: **`sentinel24-1.10`**.
 
 ## Como o motor de decisão funciona
 
-O Sentinel24 combina regras gerais, histórico individual e um score explicável para recomendar `approved`, `two_factor_required` ou `rejected`.
+O Sentinel24 combina um limite operacional noturno, regras gerais, histórico individual e um score explicável para recomendar `approved`, `two_factor_required` ou `rejected`.
 
 O processamento é síncrono: a API valida a solicitação, consulta o histórico, calcula a decisão e a persiste antes de responder. O serviço não executa transferências nem realiza a autenticação de segundo fator.
 
@@ -23,7 +23,7 @@ A aplicação utiliza Python 3.11, FastAPI, SQLAlchemy e PostgreSQL 16, executad
 
 Cada nova solicitação válida recebe uma análise persistida, inclusive quando o resultado é segundo fator ou rejeição. A tabela `pix_analyses` registra identificador público, identificador Pix, valor inteiro em centavos, datas, campos de consulta, payload original, decisão e versão da política. Requisições inválidas recebem erro de validação.
 
-O histórico é agrupado pelo documento do titular. Como o contrato não fornece a instituição da conta de origem, esse agrupamento não representa necessariamente uma única conta bancária.
+O histórico comportamental é agrupado pelo documento do titular. O limite noturno utiliza documento, agência e número da conta de origem. Como o contrato não fornece a instituição da conta de origem, a simulação assume que essas contas pertencem a uma única instituição; não identifica contas iguais em bancos diferentes.
 
 ### Idempotência e concorrência
 
@@ -47,6 +47,7 @@ Pesos e limiares são hipóteses explícitas de política, verificadas com cená
 |---|---|---|---|
 | Frequência em um minuto | Comparar atividade atual com referência individual ou política inicial. | Limite inicial de 8 solicitações incluindo a atual; com histórico maduro, maior entre 8 e duas vezes a mediana dos picos diários de um minuto. Atingir o limite gera 35 pontos em `velocity`. | Identificar rajadas sem impor a mesma frequência a todos. |
 | Frequência em cinco minutos | Avaliar atividade sustentada em janela maior. | Limite inicial de 20; com histórico maduro, maior entre 20 e duas vezes a mediana dos picos diários de cinco minutos. Atingir o limite gera 45 pontos em `velocity`. | Complementar a janela curta sem duplicar seu peso. |
+| Acúmulo financeiro em uma hora e em 24 horas | Comparar a soma de pagamentos a outros titulares, retirando o maior valor da janela, com a referência individual calculada da mesma forma. | Perfil maduro, pelo menos 3 pagamentos incluindo o atual e soma ajustada que atinja o maior entre R$ 1.000 e duas vezes a mediana dos picos diários ajustados. Cada janela gera 35 pontos em `velocity`. | Identificar pagamentos distribuídos, preservando uma despesa excepcional e adaptando a referência ao volume habitual. |
 | Valor elevado | Observar exposição financeira absoluta. | A partir de R$ 5.000; 20 pontos em `transaction_value`. | Acrescentar contexto de exposição sem intervir apenas pelo valor. |
 | Valor muito elevado | Observar um segundo patamar de exposição. | A partir de R$ 20.000; 30 pontos em `transaction_value`. | Aumentar a cautela sem bloquear isoladamente uma operação de maior valor. |
 | Valor fora do perfil | Comparar com a mediana individual. | Perfil maduro, pelo menos R$ 1.000 e pelo menos cinco vezes a mediana; 25 pontos em `transaction_value`. | Registrar despesa excepcional sem exigir segundo fator apenas pelo desvio. |
@@ -69,10 +70,11 @@ Pesos e limiares são hipóteses explícitas de política, verificadas com cená
 |---|---|---|
 | Valores, dispositivo, IP, canal e destinatário do pagador | Até 100 análises aprovadas nos últimos 30 dias pelo horário da transação, excluindo os 5 minutos imediatamente anteriores; somente registros já observados pelo servidor. | 12 amostras, 3 dias de transação distintos e 24 horas entre a primeira e a última observação da amostra. |
 | Frequência do pagador | Mesmo titular e dispositivo; análises aprovadas em janela de 14 dias, excluindo as últimas 24 horas. | Por relógio: 3 dias ativos, 3 dias observados e intervalo observado de pelo menos 48 horas. |
+| Acúmulo financeiro do pagador | Mesmo titular, reunindo contas e dispositivos; análises aprovadas para outros titulares, pelo horário observado, em 14 dias, excluindo as últimas 24 horas. | 12 amostras, 3 dias observados distintos e intervalo de pelo menos 48 horas. |
 | Relacionamento com dispositivo | Mesmo titular e dispositivo; análises aprovadas em janela de 14 dias, excluindo as últimas 24 horas, pelo horário observado. | 3 dias observados distintos e intervalo de pelo menos 48 horas. |
 | Recebimentos do destinatário | Mesmo titular destinatário, reunindo diferentes pagadores e dispositivos; análises aprovadas em janela de 14 dias, excluindo as últimas 24 horas. | Por relógio: 3 dias ativos, 3 dias observados e intervalo observado de pelo menos 48 horas. |
 
-Dias são calculados em UTC. Datas antigas no payload não substituem tempo real de observação. Sem maturidade, o perfil do pagador não gera sinais de novidade ou desvio de valor; frequência e concentração utilizam os limites iniciais.
+Dias são calculados em UTC. Datas antigas no payload não substituem tempo real de observação. Sem maturidade, o perfil do pagador não gera sinais de novidade ou desvio de valor individual e o acúmulo não gera sinal personalizado; frequência e concentração utilizam os limites iniciais.
 
 Frequência e concentração utilizam a mediana dos maiores volumes observados em janelas móveis de cada dia ativo. Isso considera pagamentos em lote sem diluí-los nas horas sem atividade e reduz a influência de um único dia extremo. O multiplicador de dois admite crescimento em relação à referência; não foi estimado como limite estatístico de fraude.
 
@@ -82,11 +84,41 @@ Um dispositivo novo não herda o limite personalizado do anterior. No compartilh
 
 A exclusão de 24 horas dificulta que a rajada atual aumente imediatamente sua própria referência. Análises rejeitadas ou com segundo fator não estabelecem familiaridade. Isso não elimina contaminação persistente: uma análise aprovada não é confirmação externa de legitimidade.
 
+### Acúmulo financeiro e despesas excepcionais
+
+A regra considera análises anteriores aprovadas e acrescenta a solicitação atual. Transferências entre contas do mesmo titular ficam fora tanto da atividade quanto da referência desse sinal. Contas e dispositivos diferentes do mesmo titular continuam compondo o volume de saída.
+
+Para cada janela móvel, calcula `soma dos valores - maior valor`. A referência utiliza a mediana dos maiores totais ajustados de cada dia ativo. A mesma transformação é aplicada ao histórico e ao pedido atual.
+
+Por exemplo, R$ 1.500 + R$ 20 + R$ 30 deixam R$ 50 após o ajuste: uma despesa grande isolada não caracteriza acúmulo. Já três pagamentos de R$ 900 deixam R$ 1.800 e podem sinalizar desvio se atingirem a referência individual. Um usuário habituado a volumes maiores pode ter limiar acima desse valor.
+
+Frequência e volume acumulado compartilham `velocity`: o mesmo aumento de atividade pode elevar ambos, e somá-los automaticamente contaria evidências relacionadas duas vezes. As janelas também não somam seus pesos entre si. O acúmulo, sozinho, pede segundo fator e não é sinal elegível de apoio à rejeição.
+
+A consulta histórica só é executada se houver pelo menos três pagamentos e soma ajustada de pelo menos R$ 1.000 em alguma janela. A consulta lê mais 24 horas antes do início da referência para calcular corretamente as janelas na fronteira. Esses registros adicionais não contam para amostras, dias ou intervalo de maturidade.
+
+Retirar o maior pagamento é uma tolerância explícita, não um detector de aluguel. Ela pode reduzir sensibilidade a perdas concentradas em uma operação; os sinais de valor individual e as demais famílias continuam ativos. Sem histórico maduro, não se presume uma referência pessoal de acúmulo.
+
+### Limite operacional noturno
+
+O limite noturno é uma condição operacional separada do score. No escopo implementado:
+
+- Aplica-se a solicitações de pessoa física para pessoa física, identificadas pelo formato do documento normalizado.
+- O padrão é R$ 1.000 acumulados por conta de origem, das 20h às 6h, em UTC-03:00.
+- O relógio utilizado é o observado pelo banco de dados após os bloqueios, não a data enviada no payload.
+- A janela começa no horário configurado e termina às 6h; não reinicia à meia-noite. O início é inclusivo e o fim exclusivo.
+- Somam-se os valores integrais das análises anteriores aprovadas da conta para destinatários PF no período. Análises rejeitadas ou com segundo fator não consomem essa simulação de limite.
+- Somar exatamente o limite é permitido; ultrapassá-lo resulta em `rejected`, mesmo com score zero. Segundo fator não substitui esse limite.
+- `ACCOUNT_NIGHT_POLICIES`, em `src/rules/night_limit.py`, permite configurações previamente autorizadas pela instituição: limite específico e início às 20h ou 22h. Essa configuração não vem do payload e não há endpoint para solicitar alterações.
+
+O histórico usado pelo limite e a nova análise ficam protegidos pelos bloqueios do titular até o commit, evitando aprovações concorrentes acima do limite simulado. Repetições idempotentes recuperam a decisão original, sem novo consumo.
+
+A contabilização utiliza aprovações do motor, não pagamentos liquidados. O serviço não recebe confirmação de liquidação, cancelamento ou conclusão de segundo fator e não representa uma implementação completa de controles regulatórios. Operações fora do escopo PF para PF continuam sujeitas às regras de risco.
+
 ### Racional dos parâmetros e dos pesos
 
 As janelas de um e cinco minutos separam rajadas curtas de atividade sustentada. A janela de uma hora observa compartilhamento de aparelho; as de 14 e 30 dias equilibram referência recente e quantidade de observações. Amostras, dias e intervalos mínimos evitam personalização imediata com poucos registros. Os valores exatos permanecem escolhas iniciais de política.
 
-Os patamares de R$ 5.000 e R$ 20.000 representam exposição absoluta; a comparação com cinco vezes a mediana acrescenta contexto individual. O piso de R$ 1.000 evita sinalizar multiplicações de valores muito pequenos. Nenhum desses sinais de valor, isoladamente, alcança os 35 pontos para segundo fator.
+Os patamares de R$ 5.000 e R$ 20.000 representam exposição absoluta; a comparação com cinco vezes a mediana acrescenta contexto individual. O piso de R$ 1.000 evita sinalizar multiplicações de valores muito pequenos. Nenhum desses sinais de valor individual, isoladamente, alcança os 35 pontos para segundo fator. O acúmulo tem critério próprio, depende de referência madura e contribui para `velocity`.
 
 As idades de 7 dias e 24 horas acrescentam contexto de antiguidade. Três titulares no aparelho e cinco pagadores no destinatário representam multiplicidade, sem afirmar que compartilhamento ou volume sejam fraude. A condição de repasse combina diversidade, materialidade e proporção da saída; também pode ocorrer em atividades legítimas.
 
@@ -95,6 +127,8 @@ Os pesos distinguem contexto fraco, exposição e alterações comportamentais. 
 ### Relógios e geografia
 
 Frequência e fluxo avaliam separadamente o horário informado da transação e o horário observado pelo servidor, obtido no banco após adquirir os bloqueios. Evidências de relógios diferentes não são misturadas para completar uma condição nem duplicam o peso da mesma regra.
+
+Acúmulo financeiro e limite noturno utilizam somente o horário observado. A data declarada não altera suas janelas.
 
 A solicitação atual é acrescentada às contagens quando a condição exige sua inclusão. Quantidades de titulares distintos anteriores não recebem esse acréscimo automaticamente.
 
@@ -108,7 +142,7 @@ No mesmo instante, a distância permitida pela fórmula é de aproximadamente 63
 
 | Família | Contexto observado |
 |---|---|
-| `velocity` | Frequência das solicitações. |
+| `velocity` | Frequência e volume financeiro acumulado. |
 | `transaction_value` | Valor absoluto e desvio em relação ao perfil. |
 | `access_context` | Conta de origem, dispositivo, rede, canal e deslocamento. |
 | `counterparty` | Antiguidade e relacionamento com o destinatário. |
@@ -117,7 +151,9 @@ No mesmo instante, a distância permitida pela fórmula é de aproximadamente 63
 
 Somente o maior peso de cada família contribui para o score. Os máximos são somados, com limite de 100 pontos. Isso reduz dupla contagem de sinais relacionados, sem pressupor independência estatística entre famílias.
 
-A decisão segue esta ordem:
+Se o limite noturno aplicável foi excedido, a recomendação final é `rejected`. A resposta identifica `decision_basis: "operational_limit"`, `operational_reason_codes: ["NIGHT_LIMIT_EXCEEDED"]` e o cálculo em `operational_checks.night_limit`. Esse motivo não acrescenta pontos ao score.
+
+Nos demais casos, a decisão de risco segue esta ordem:
 
 1. **`rejected`:** score de pelo menos 70, sinais em pelo menos duas famílias e pelo menos um sinal elegível de apoio à rejeição com peso de 30 ou mais.
 2. **`two_factor_required`:** score de pelo menos 35, quando os critérios de rejeição não foram atendidos.
@@ -130,13 +166,13 @@ Os sinais elegíveis de apoio à rejeição são:
 - `ACCESS_CONTEXT_CHANGE`, para mudanças combinadas de acesso.
 - `RAPID_FORWARDING_PATTERN`, para possível repasse rápido.
 
-Geografia e dispositivo novo isolado continuam contribuindo para o score, mas não satisfazem esse requisito de apoio. Assim, score alto não determina rejeição automaticamente. A resposta registra os códigos elegíveis que efetivamente dispararam em `rejection_support_codes`.
+Geografia, dispositivo novo isolado e acúmulo financeiro continuam contribuindo para o score, mas não satisfazem esse requisito de apoio. Assim, score alto não determina rejeição automaticamente. A resposta registra os códigos elegíveis que efetivamente dispararam em `rejection_support_codes`.
 
 Os 35 pontos permitem segundo fator por um sinal mais relevante ou combinação de sinais fracos. Os 70 pontos e os critérios adicionais tornam a rejeição mais restritiva. Esses critérios são decisões de política, não provas de fraude.
 
 ### Exemplos verificados
 
-Cada linha considera os sinais descritos; referências maduras são utilizadas nas regras que dependem de perfil.
+Os exemplos de risco consideram o limite operacional não excedido e os sinais descritos; referências maduras são utilizadas nas regras que dependem de perfil.
 
 | Cenário | Score | Recomendação |
 |---|---:|---|
@@ -146,6 +182,10 @@ Cada linha considera os sinais descritos; referências maduras são utilizadas n
 | R$ 20.000 para destinatário novo, em celular novo, com IP e canal conhecidos. | 75 | `two_factor_required` |
 | Mesmo cenário, com mudança também de IP. | 80 | `rejected` |
 | Geografia incompatível e frequência acima do limite de um minuto, sem outros sinais. | 70 | `rejected` |
+| Acúmulo acima da referência nas duas janelas, sem outros sinais. | 35 | `two_factor_required` |
+| Frequência de um minuto e acúmulo acima da referência, sem outros sinais. | 35 | `two_factor_required` |
+| Acúmulo acima da referência e mudança combinada de dispositivo e IP. | 70 | `rejected` |
+| Limite noturno excedido, sem sinais de risco. | 0 | `rejected` por limite operacional |
 
 Não há reconhecimento específico de aluguel nem execução de segundo fator. O contrato não informa sua conclusão; uma análise com `two_factor_required` não vira pagamento confirmado ou familiaridade automaticamente.
 
@@ -166,8 +206,10 @@ A resposta de sucesso possui exatamente três campos no primeiro nível:
   "key": "UUID da análise",
   "status": "approved",
   "metadata": {
-    "policy_version": "sentinel24-1.8",
+    "policy_version": "sentinel24-1.10",
     "risk_score": 0,
+    "decision_basis": "risk_policy",
+    "operational_reason_codes": [],
     "rejection_support_codes": []
   }
 }
@@ -230,7 +272,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest -q tests/unit tests/integration
 ```
 
-A suíte contém **152 testes unitários e 72 de integração: 224 no total**. Abrange validação, normalização, idempotência, concorrência, perfis, frequência, dispositivos, destinatários, geografia, composição da decisão e contenção.
+A suíte contém **193 testes unitários e 101 de integração: 294 no total**, além de um E2E executado separadamente. Abrange validação, normalização, idempotência, concorrência, perfis, frequência, dispositivos, destinatários, geografia, limite noturno, acúmulo financeiro, composição da decisão e contenção. Os 294 testes e o E2E de recuperação passaram na validação da versão 1.10.
 
 O E2E de recuperação é executado separadamente:
 
@@ -285,24 +327,30 @@ Repetir o POST retorna `200` e a mesma análise. Alterar o conteúdo mantendo o 
 
 ### Desempenho e limites
 
-Os últimos ensaios documentados utilizaram a política **`sentinel24-1.6`**; não são novas medições da `1.8`.
+O ensaio da política **`sentinel24-1.10`** utilizou `accumulated_amount`: 200 titulares independentes, concorrência oito e 20.400 registros sintéticos preparados antes da medição — 100 históricos e dois pagamentos recentes por titular.
 
-Com 200 solicitações para o mesmo destinatário, 20.000 registros históricos preparados por rodada e manutenção explícita antes da medição:
+As 200 respostas confirmaram referência de acúmulo avaliada e madura, score 35 somente em `velocity`, sinais de uma hora e 24 horas e recomendação `two_factor_required`.
 
-| Medida | Concorrência 4 | Concorrência 8 |
-|---|---:|---:|
-| Decisões válidas | 200 | 197 |
-| HTTP 503 | 0 | 3 |
-| p95 | 943,38 ms | 1.502,53 ms |
-| p99 | 1.437,98 ms | 1.672,46 ms |
-| Máximo | 1.522,71 ms | 1.921,00 ms |
-| Decisões válidas em até 2.000 ms | 200 | 197 |
+| Medida | Resultado |
+|---|---:|
+| HTTP 201 válidos | 200 |
+| Erros | 0 |
+| Decisões válidas em até 2.000 ms | 200 |
+| Duração HTTP | 12,31 s |
+| Decisões válidas/s | 16,24 |
+| p50 | 425,85 ms |
+| p95 | 883,21 ms |
+| p99 | 1.572,60 ms |
+| Máximo | 1.609,77 ms |
 
-Dois segundos são um alvo experimental interno, não um SLA. O resultado com quatro clientes não demonstra solução da contenção observada com oito.
+A preparação executou ANALYZE, sem VACUUM explícito. Dois segundos são um alvo experimental interno, não um SLA ou prazo oficial de liquidação Pix.
+
+Os ensaios históricos da política 1.6 para o mesmo destinatário continuam documentados: com concorrência oito ocorreram três HTTP 503 em 200 solicitações; com quatro, nenhuma. O novo cenário utiliza titulares, destinatários e dispositivos diferentes e não demonstra solução daquela contenção.
 
 Para medir a versão em execução:
 
 ```bash
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload accumulated_amount --history 100
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload independent
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload same_payer
 PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload shared_device --history 100

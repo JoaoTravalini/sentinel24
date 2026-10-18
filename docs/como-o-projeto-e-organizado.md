@@ -42,12 +42,14 @@ O controller decide commit ou rollback. O middleware garante o fechamento da ses
 
 - `profile.py`: valor relativo e familiaridade de acesso e destinatário.
 - `velocity.py`: frequência com referência individual.
+- `accumulation.py`: volume ajustado em uma hora e 24 horas, com referência individual.
+- `night_limit.py`: período noturno e limite operacional configurável por conta.
 - `device.py`: compartilhamento sem relacionamento estabelecido.
 - `recipient.py`: concentração de recebimentos com referência do destinatário.
 - `geography.py`: consistência entre distância e tempo declarados.
 - `engine.py`: regras complementares, famílias, pesos e critérios de decisão.
 
-As famílias atravessam módulos: `access_context`, por exemplo, recebe sinais de perfil, dispositivo e geografia. Módulo não equivale a família.
+As famílias atravessam módulos: `access_context`, por exemplo, recebe sinais de perfil, dispositivo e geografia. Módulo não equivale a família. Frequência e acúmulo compartilham `velocity` e contribuem com o maior peso, evitando somar evidências relacionadas. O limite noturno é uma condição operacional: pode rejeitar com score zero e aparece em `operational_checks`, separado dos sinais de risco.
 
 Os testes unitários exercitam normalização e decisões com contextos controlados. Os testes de integração validam HTTP e consultas no PostgreSQL. O E2E de recuperação interrompe e reinicia o banco, por isso deve ser executado separadamente.
 

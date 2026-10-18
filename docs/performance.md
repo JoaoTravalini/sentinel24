@@ -1,12 +1,37 @@
 # Ensaios locais de desempenho
 
-A política atual do código é `sentinel24-1.8`. As medições abaixo pertencem às versões indicadas em cada seção; a mais recente medida aqui é a `1.6`. Não representam uma nova medição da `1.8`.
+A política atual é `sentinel24-1.10`. A medição mais recente utiliza `accumulated_amount` nessa versão. Os ensaios anteriores permanecem identificados por sua política e não constituem novas medições da 1.10.
 
 Medições realizadas em 17 e 18/10/2026, em Windows com Docker Desktop, PostgreSQL 16 e API Uvicorn com `--reload`.
 
 Alvo experimental interno: decisão válida em até 2.000 ms. Esse alvo não representa um SLA garantido nem um prazo oficial de liquidação Pix.
 
-## Resultado mais recente: política sentinel24-1.6
+## Resultado mais recente: política sentinel24-1.10
+
+Cenário `accumulated_amount`: 200 pagadores, destinatários e dispositivos independentes; concorrência oito. Cada titular recebe 100 registros históricos de R$ 100 e dois pagamentos recentes de R$ 900, observados 20 e 40 minutos antes do instante de preparação. A solicitação medida é outro pagamento de R$ 900.
+
+Foram preparados 20.400 registros sintéticos antes da medição HTTP. A preparação executou ANALYZE, sem VACUUM explícito. As 200 respostas confirmaram perfil de valores maduro, comparação geográfica avaliada e referência de acúmulo avaliada e madura. Também confirmaram score 35 somente em `velocity`, os sinais `ACCUMULATED_AMOUNT_1H` e `ACCUMULATED_AMOUNT_24H` e status `two_factor_required`.
+
+| Medida | Resultado |
+|---|---:|
+| Solicitações / concorrência | 200 / 8 |
+| Histórico preparado | 20.400 |
+| HTTP 201 válidos | 200 |
+| Erros reportados | 0 |
+| Referência de acúmulo avaliada e madura | 200 respostas |
+| Decisões válidas em até 2.000 ms | 200 |
+| Duração HTTP | 12,31 s |
+| Decisões válidas/s | 16,24 |
+| p50 | 425,85 ms |
+| p95 | 883,21 ms |
+| p99 | 1.572,60 ms |
+| Máximo | 1.609,77 ms |
+
+Os documentos dos pagadores são CNPJ sintéticos; o limite noturno PF para PF não se aplica a esse cenário. Os perfis de compartilhamento de dispositivo e concentração do destinatário não foram avaliados. Esse ensaio exercita o caminho de acúmulo com histórico maduro; não é um teste de todas as regras simultaneamente nem um cenário de contenção no mesmo destinatário.
+
+Não houve erro ou resposta acima do alvo interno nessa execução. O resultado não caracteriza capacidade máxima, SLA ou precisão antifraude e não substitui os ensaios históricos de contenção.
+
+## Histórico: política sentinel24-1.6
 
 O cenário `same_recipient` utiliza pagadores e dispositivos diferentes associados ao mesmo destinatário. Cada execução prepara 100 registros históricos por pagador, totalizando 20.000 registros sintéticos novos antes da medição HTTP. As solicitações disputam o bloqueio transacional do destinatário.
 
@@ -132,6 +157,14 @@ As 1.200 solicitações produziram HTTP 201 válidos, sem erros reportados e den
 
 ## Reprodução na versão atual
 
+Acúmulo financeiro, exigindo referência madura e a decisão esperada em cada resposta:
+
+```bash
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload accumulated_amount --history 100
+```
+
+Esse cenário exige `--history 100` e acrescenta dois registros recentes por titular. `amount_history_checks` informa quantas respostas confirmaram a referência avaliada e madura. A validação também exige os dois sinais de acúmulo, score 35 somente em `velocity` e segundo fator.
+
 Com API e banco em execução, na raiz:
 
 ```bash
@@ -167,7 +200,7 @@ Cada rodada cria novos identificadores e informa a versão da política, as esta
 - Os percentis usam nearest rank e consideram todas as requisições medidas, inclusive respostas de erro.
 - `approved`, `two_factor_required` e `rejected` são decisões válidas. HTTP 503 e falhas de transporte são erros técnicos e não entram na taxa de decisões válidas.
 - O script retorna código diferente de zero quando encontra erros. Ultrapassar o orçamento de latência, isoladamente, não altera esse código: é necessário consultar `valid_within_budget`.
-- As 20.000 linhas de cada ensaio são adicionadas à base existente. O tamanho total cresce entre rodadas; 20.000 não significa o total armazenado.
+- Os registros preparados são adicionados à base existente: 20.000 nos cenários históricos com 200 titulares e profundidade 100; 20.400 no cenário de acúmulo, que inclui dois registros recentes adicionais por titular. O tamanho total cresce entre rodadas; o número preparado não representa o total armazenado.
 - Aquecimento, cache, estatísticas, manutenção, ordem das rodadas, concorrência e carga da máquina podem influenciar os resultados. As comparações não isolam o efeito causal de cada alteração.
 - Os históricos são preparados sinteticamente para exercitar consultas e maturidade. Não foram produzidos por dias de tráfego real nem constituem uma base rotulada de fraude.
 - A manutenção e os testes de recuperação do banco devem ocorrer separadamente da medição HTTP.
