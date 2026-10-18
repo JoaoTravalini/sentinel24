@@ -107,4 +107,11 @@ class PixAnalysis(Base):
                 "pix_id",
             ],
         ),
+        Index(
+            "pix_analyses_recipient_reference_idx",
+            "destination_document",
+            "received_at",
+            postgresql_include=["transaction_at", "pix_id"],
+            postgresql_where=(status == "approved"),
+        ),
     )

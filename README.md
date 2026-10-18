@@ -21,7 +21,7 @@ A aplicação utiliza Python, FastAPI, SQLAlchemy e PostgreSQL, executados com D
 - **Rules:** calculam os sinais e a decisão sem consultar diretamente o banco.
 - **DTOs:** organizam o contrato de saída.
 
-O contexto inclui atividade recente, perfil do pagador, frequência histórica, relacionamentos com dispositivos e localização anterior disponível.
+O contexto inclui atividade recente, perfil do pagador, frequência histórica, relacionamentos com dispositivos, perfil de recebimentos do destinatário e localização anterior disponível.
 
 O histórico é agrupado pelo documento do titular. Como o contrato não fornece um identificador completo da instituição da conta de origem, esse agrupamento não representa necessariamente uma única conta bancária.
 
@@ -53,7 +53,7 @@ Uma repetição recupera a decisão original, inclusive sua versão de política
 
 ## Regras
 
-Política atual: **`sentinel24-1.5`**.
+Política atual: **`sentinel24-1.6`**.
 
 Os pesos e limiares são hipóteses explícitas de política, verificadas com cenários sintéticos. Não representam probabilidades de fraude nem foram calibrados com uma base rotulada de transações reais.
 
@@ -72,7 +72,7 @@ Os pesos e limiares são hipóteses explícitas de política, verificadas com ce
 | Mudança combinada de acesso | Dispositivo novo acompanhado de IP ou canal novo. | Perfil maduro; 35 pontos em `access_context`. | Dar mais relevância à combinação de mudanças. |
 | Destino recente | Observar pouca antiguidade da conta destinatária. | Menos de 24 horas; 25 pontos em `counterparty`. Não aplicado entre titulares iguais. | Acrescentar contexto sobre o destinatário. |
 | Destinatário fora do perfil | Titular destinatário ausente da amostra recente. | Perfil maduro; 15 pontos em `counterparty`. Não aplicado entre titulares iguais. | Reconhecer um relacionamento novo sem impedir todo primeiro pagamento. |
-| Concentração de entradas | Vários pagadores direcionando solicitações ao mesmo destinatário. | Em 5 minutos: pelo menos 5 pagadores distintos anteriores e 8 solicitações incluindo a atual; 25 pontos em `network_flow`. | Observar concentração sem concluir isoladamente que seja fraude, pois comerciantes também recebem de muitos clientes. |
+| Concentração de entradas | Comparar o volume recebido de vários pagadores com o histórico do destinatário. | Em 5 minutos: pelo menos 5 pagadores distintos anteriores e contagem incluindo a atual que atinja o limite efetivo. Limite inicial: 8; com perfil maduro: maior entre 8 e duas vezes a mediana dos picos diários. 25 pontos em `network_flow`. Não aplicado entre titulares iguais. | Distinguir concentração incomum de um volume habitual de recebimentos. |
 | Possível repasse rápido | Comparar uma saída com entradas anteriormente aprovadas na análise. | Em 5 minutos: pelo menos 3 pagadores distintos, soma de pelo menos R$ 1.000 e saída de pelo menos 70% dessa soma; 45 pontos em `network_flow`. | Identificar possível concentração e repasse. Aprovação de análise não comprova liquidação. |
 | Abertura posterior à transação | Comparar as datas de abertura e da solicitação. | Abertura posterior à transação; 35 pontos em `data_quality`. | Sinalizar inconsistência temporal dos dados. |
 | Deslocamento geográfico incompatível | Comparar distância e intervalo entre localizações. | Mesmo titular e dispositivo; referência anterior aprovada em até 24 horas; distância mínima de 100 km; desconto de 30 km e acréscimo de 120 segundos; velocidade resultante acima de 1.000 km/h; 35 pontos em `access_context`. | Aplicar tolerâncias antes de sinalizar incompatibilidade. O GPS recebido não comprova a localização. |
@@ -125,6 +125,36 @@ Assim, um dispositivo utilizado recorrentemente por várias pessoas não recebe 
 Os relacionamentos expiram com a janela histórica e não anulam outros sinais. Análises rejeitadas ou que exigiram segundo fator não estabelecem familiaridade.
 
 Quando há menos de três titulares anteriores, a consulta histórica é dispensada porque o limite da regra ainda não pode ser atingido.
+
+### Referência de recebimentos do destinatário
+
+A referência reúne análises anteriormente aprovadas direcionadas ao mesmo titular destinatário, considerando diferentes pagadores e dispositivos. Não exige que o pagador atual já conheça esse destinatário.
+
+A janela histórica é de 14 dias, excluindo as últimas 24 horas. O motor calcula picos diários de contagens em janelas móveis de cinco minutos e utiliza a mediana desses picos.
+
+A personalização exige, para cada relógio:
+
+- Pelo menos 3 dias ativos.
+- Pelo menos 3 dias de recebimentos observados.
+- Pelo menos 48 horas entre a primeira e a última observação elegível.
+
+Sem maturidade, permanece o limite inicial de 8 solicitações. Com maturidade, o limite é o maior entre 8 e duas vezes a mediana dos picos diários.
+
+O sinal exige simultaneamente pelo menos 5 pagadores distintos anteriores e contagem, incluindo a solicitação atual, que atinja o limite efetivo. As condições são verificadas no mesmo relógio; evidências de relógios diferentes não são misturadas para completar uma condição.
+
+| Histórico do destinatário | Solicitações atuais em 5 minutos | Pagadores distintos anteriores | Limite | Resultado da regra |
+|---|---:|---:|---:|---|
+| Sem referência madura | 8 | 5 | 8 | Sinaliza concentração. |
+| Picos diários com mediana de 12 | 12 | 11 | 24 | Não sinaliza concentração. |
+| Picos diários com mediana de 12 | 24 | 23 | 24 | Sinaliza concentração. |
+
+Assim, um primeiro pagamento para um destinatário habitualmente movimentado pode receber apenas os 15 pontos de relacionamento novo, permanecendo aprovado quando não há outros sinais. Crescimento acima da referência e mudanças de acesso continuam podendo exigir segundo fator ou rejeição.
+
+Essa familiaridade não é uma autorização permanente. A referência expira com a janela histórica, exclui análises rejeitadas e recomendações de segundo fator e não anula outras famílias.
+
+A exclusão recente dificulta que uma rajada aumente imediatamente seu próprio limite. Não elimina contaminação persistente: análise aprovada não é confirmação externa de legitimidade ou liquidação.
+
+A consulta histórica é dispensada quando a atividade recente ainda não pode atingir as condições iniciais da regra. Instantes iguais mantêm a multiplicidade das transações e os dias de observação distintos.
 
 ### Perfil de valores e familiaridade
 
@@ -204,7 +234,7 @@ A resposta de sucesso possui exatamente três campos no primeiro nível:
   "key": "UUID da análise",
   "status": "approved",
   "metadata": {
-    "policy_version": "sentinel24-1.5",
+    "policy_version": "sentinel24-1.6",
     "risk_score": 0
   }
 }
@@ -287,7 +317,7 @@ Testes unitários e de integração, com API e banco em execução:
 python -m pytest -q tests/unit tests/integration
 ```
 
-A suíte contém 110 testes unitários e 51 testes de integração.
+A suíte contém **125 testes unitários e 68 testes de integração: 193 no total**, além do E2E de recuperação executado separadamente.
 
 Teste E2E de recuperação:
 
@@ -297,7 +327,7 @@ python -m pytest -v tests/e2e/test_database_recovery.py
 
 O E2E interrompe temporariamente o banco do projeto e o inicia novamente. Execute-o separadamente dos demais testes e benchmarks.
 
-A cobertura inclui validação, normalização, idempotência, concorrência, composição de sinais, perfis, frequência adaptativa, relacionamentos com dispositivos, geografia, limites temporais, contenção e recuperação do banco.
+A cobertura inclui validação, normalização, idempotência, concorrência, composição de sinais, perfis, frequência adaptativa, relacionamentos com dispositivos, concentração adaptativa de recebimentos, geografia, limites temporais, contenção e recuperação do banco.
 
 ### Experimentar a API
 
@@ -350,34 +380,48 @@ A recomendação depende do histórico existente. Uma repetição de análise cr
 
 ### Desempenho
 
+Cenários de carga com pagadores independentes, mesmo pagador, dispositivo compartilhado e destinatário compartilhado:
+
 ```bash
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload independent
 python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload same_payer
-PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload independent --history 100
 PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload shared_device --history 100
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload same_recipient --history 100
 ```
 
-Os cenários com histórico inserem registros sintéticos e atualizam as estatísticas do PostgreSQL com `ANALYZE` antes da medição HTTP.
+Os cenários com histórico inserem registros sintéticos e atualizam as estatísticas com ANALYZE antes da medição HTTP. A opção `--vacuum-history` executa, após confirmar a inserção, VACUUM ANALYZE sem trabalhadores paralelos. Essa manutenção também fica fora do tempo medido e não ocorre na API a cada solicitação.
 
-O benchmark exige perfil de valores maduro e comparação geográfica avaliada nesses cenários. Também informa quantas respostas consultaram o histórico de relacionamentos com o dispositivo.
+Ensaios com histórico mantido explicitamente:
 
-No último ensaio da política `1.5`, 200 pagadores com um dispositivo compartilhado e 100 registros históricos por pagador produziram:
+```bash
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 4 --workload same_recipient --history 100 --vacuum-history
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload same_recipient --history 100 --vacuum-history
+```
 
-| Medida | Resultado |
-|---|---:|
-| Histórico preparado | 20.000 registros |
-| Clientes concorrentes | 8 |
-| Decisões válidas | 200 |
-| Erros reportados | 0 |
-| Histórico de dispositivo avaliado | 197 respostas |
-| p95 | 1.372,63 ms |
-| p99 | 1.833,96 ms |
-| Máximo | 2.170,26 ms |
-| Decisões válidas em até 2.000 ms | 199 de 200 |
+Cada execução com 100 registros por pagador prepara 20.000 registros novos. Eles se somam à base existente. O script exige perfil de valores maduro e comparação geográfica avaliada e informa quantas respostas avaliaram os perfis de dispositivo e destinatário.
 
-Dois segundos são um alvo experimental interno. O ensaio apresentou uma resposta acima desse alvo e não demonstra garantia de latência.
+Nos ensaios mais recentes da política `sentinel24-1.6`, com destinatário compartilhado e manutenção explícita:
 
-O cenário força contenção no mesmo dispositivo. Os bloqueios foram preservados durante as otimizações para manter a coerência do histórico.
+| Medida | Concorrência 4 | Concorrência 8 |
+|---|---:|---:|
+| Solicitações | 200 | 200 |
+| Histórico preparado por execução | 20.000 | 20.000 |
+| Decisões válidas | 200 | 197 |
+| HTTP 503 | 0 | 3 |
+| Perfil do destinatário avaliado | 193 respostas | 190 respostas |
+| p50 | 457,12 ms | 942,56 ms |
+| p95 | 943,38 ms | 1.502,53 ms |
+| p99 | 1.437,98 ms | 1.672,46 ms |
+| Máximo | 1.522,71 ms | 1.921,00 ms |
+| Decisões válidas em até 2.000 ms | 200 | 197 |
+
+Todas as decisões válidas desses dois ensaios foram `approved`, conforme o histórico sintético preparado. As sete análises iniciais ainda não precisaram consultar a referência histórica do destinatário.
+
+Dois segundos são um alvo experimental interno. O ensaio com quatro clientes não demonstra que os erros observados com oito tenham sido resolvidos nem estabelece SLA ou capacidade máxima.
+
+As consultas reutilizam a estrutura SQL de atividade e agrupam o histórico preservando contagens e instantes exatos. Os bloqueios e limites de espera foram mantidos. Resultados de análises ou consultas históricas não são guardados em cache por essa reutilização da estrutura SQL.
+
+O benchmark usa clientes em ciclo fechado: cada um envia uma nova solicitação depois que a anterior termina. Dados, condições de manutenção, carga da máquina e tamanho acumulado da base influenciam as medições.
 
 Método, resultados anteriores, falhas observadas e limitações estão em [docs/performance.md](docs/performance.md).
 

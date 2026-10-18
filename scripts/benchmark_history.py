@@ -12,7 +12,7 @@ os.environ.setdefault(
     f"{os.environ.get('DB_PORT', '5432')}/bootcamp",
 )
 
-from database import SessionLocal
+from database import SessionLocal, engine
 from models import PixAnalysis
 from utils.pix_payload import (
     calculate_payload_hash,
@@ -43,7 +43,7 @@ def context_ready(metadata):
     )
 
 
-def prepare_history(payloads, depth):
+def prepare_history(payloads, depth, *, vacuum=False):
     samples = {}
 
     for payload in payloads:
@@ -106,6 +106,15 @@ def prepare_history(payloads, depth):
 
     with SessionLocal.begin() as session:
         session.execute(insert(PixAnalysis), rows)
-        session.execute(text("ANALYZE pix_analyses"))
+        if not vacuum:
+            session.execute(text("ANALYZE pix_analyses"))
+
+    if vacuum:
+        with engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            connection.execute(
+                text("VACUUM (ANALYZE, PARALLEL 0) pix_analyses")
+            )
 
     return len(rows)

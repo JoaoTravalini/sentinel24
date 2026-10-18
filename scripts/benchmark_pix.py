@@ -79,7 +79,9 @@ def main():
     )
     parser.add_argument(
         "--workload",
-        choices=("independent", "same_payer", "shared_device"),
+        choices=(
+            "independent", "same_payer", "shared_device", "same_recipient",
+        ),
         default="independent",
     )
     parser.add_argument(
@@ -88,7 +90,15 @@ def main():
     parser.add_argument(
         "--history", type=int, choices=(0, 12, 100), default=0
     )
+    parser.add_argument(
+        "--vacuum-history",
+        action="store_true",
+        help="Executa VACUUM ANALYZE antes da medição HTTP.",
+    )
     args = parser.parse_args()
+
+    if args.vacuum_history and not args.history:
+        parser.error("--vacuum-history exige --history.")
 
     base = (
         f"http://{os.environ.get('SERVER_LOCALHOST', '127.0.0.1')}:"
@@ -109,6 +119,7 @@ def main():
 
     now = datetime.now(timezone.utc)
     shared_payer = document()
+    shared_recipient = document()
     shared_device = f"bench-device-{uuid4().hex}"
     payloads = []
 
@@ -121,7 +132,11 @@ def main():
         payloads.append(build_payload(
             now,
             shared_payer if same_payer else document(),
-            document(),
+            (
+                shared_recipient
+                if args.workload == "same_recipient"
+                else document()
+            ),
             (
                 shared_device
                 if same_device
@@ -134,7 +149,9 @@ def main():
     if args.history:
         from benchmark_history import context_ready, prepare_history
 
-        history_rows = prepare_history(payloads, args.history)
+        history_rows = prepare_history(
+            payloads, args.history, vacuum=args.vacuum_history
+        )
 
     def worker(items):
         results = []
@@ -149,6 +166,7 @@ def main():
                 error = None
                 policy_version = None
                 device_history_checked = False
+                recipient_history_checked = False
 
                 try:
                     response = session.post(
@@ -196,6 +214,13 @@ def main():
                                 .get("device_profile", {})
                                 .get("assessed") is True
                             )
+                            recipient_history_checked = any(
+                                clock.get("assessed") is True
+                                for clock in body["metadata"]
+                                .get("context", {})
+                                .get("recipient_profile", {}).values()
+                                if isinstance(clock, dict)
+                            )
                         else:
                             error = "invalid_contract"
 
@@ -213,6 +238,7 @@ def main():
                     error,
                     policy_version,
                     device_history_checked,
+                    recipient_history_checked,
                 ))
 
         return results
@@ -240,8 +266,12 @@ def main():
         "history_per_payer": args.history,
         "prepared_history_rows": history_rows,
         "history_statistics_refreshed": bool(args.history),
+        "history_vacuumed": bool(
+            args.history and args.vacuum_history
+        ),
         "requires_mature_profile_and_geo": bool(args.history),
         "device_history_checks": sum(row[5] for row in results),
+        "recipient_history_checks": sum(row[6] for row in results),
         "requests": args.requests,
         "concurrency": concurrency,
         "duration_s": round(duration, 2),
@@ -271,7 +301,7 @@ def main():
         "budget_ms": args.budget_ms,
         "valid_within_budget": sum(
             1
-            for elapsed, _, decision, error, _, _ in results
+            for elapsed, _, decision, error, _, _, _ in results
             if (
                 error is None
                 and decision is not None

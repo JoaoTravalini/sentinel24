@@ -314,7 +314,7 @@ def test_api_exports_frequency_limits_and_policy_version(
 ):
     result = create_analysis(isolated_payload)
 
-    assert result["metadata"]["policy_version"] == "sentinel24-1.5"
+    assert result["metadata"]["policy_version"] == "sentinel24-1.6"
 
     frequency = result["metadata"]["context"]["frequency_profile"]
 
@@ -329,3 +329,16 @@ def test_api_exports_frequency_limits_and_policy_version(
     assert device["assessed"] is False
     assert device["prior_distinct_payers_1h"] == 0
     assert device["unfamiliar_payers_1h"] == 0
+
+def test_api_exports_recipient_reference(isolated_payload):
+    result = create_analysis(isolated_payload)
+    metadata = result["metadata"]
+
+    assert metadata["policy_version"] == "sentinel24-1.6"
+    assert metadata["parameters"]["recipient_peak_multiplier"] == 2
+    recipient = metadata["context"]["recipient_profile"]
+
+    for clock in ("received", "event"):
+        assert recipient[clock]["assessed"] is False
+        assert recipient[clock]["mature"] is False
+        assert recipient[clock]["effective_limit_5m"] == 8

@@ -12,6 +12,12 @@ from rules.geography import (
     evaluate_geography,
 )
 
+from rules.recipient import (
+    RECIPIENT_PARAMETERS,
+    RECIPIENT_RULES,
+    evaluate_recipient,
+)
+
 from rules.velocity import FREQUENCY_PARAMETERS, evaluate_velocity
 from rules.device import DEVICE_PARAMETERS, DEVICE_RULES, evaluate_device
 
@@ -20,6 +26,7 @@ PARAMETERS = {
     **GEOGRAPHY_PARAMETERS,
     **DEVICE_PARAMETERS,
     **FREQUENCY_PARAMETERS,
+    **RECIPIENT_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
@@ -28,8 +35,6 @@ PARAMETERS = {
     "very_high_amount_cents": 2_000_000,
     "source_recent_hours": 168,
     "destination_recent_hours": 24,
-    "recipient_prior_payers_5m": 5,
-    "recipient_count_5m": 8,
     "forwarding_prior_payers_5m": 3,
     "forwarding_minimum_cents": 100_000,
     "forwarding_percent": 70,
@@ -41,20 +46,20 @@ RULES = {
     **PROFILE_RULES,
     **GEOGRAPHY_RULES,
     **DEVICE_RULES,
+    **RECIPIENT_RULES,
     "SOURCE_BURST_1M": ("velocity", 35),
     "SOURCE_BURST_5M": ("velocity", 45),
     "HIGH_AMOUNT": ("transaction_value", 20),
     "VERY_HIGH_AMOUNT": ("transaction_value", 30),
     "RECENT_SOURCE_ACCOUNT": ("access_context", 15),
     "RECENT_DESTINATION_ACCOUNT": ("counterparty", 25),
-    "RECIPIENT_FAN_IN": ("network_flow", 25),
     "RAPID_FORWARDING_PATTERN": ("network_flow", 45),
     "ACCOUNT_TIME_INCONSISTENCY": ("data_quality", 35),
 }
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.5"
+    policy_version = "sentinel24-1.6"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -127,26 +132,13 @@ class RiskEngine:
         for signal in device["signals"]:
             add(signal["code"], signal["evidence"])
 
+        recipient = evaluate_recipient(context, p)
+
         if not same_owner:
+            for signal in recipient["signals"]:
+                add(signal["code"], signal["evidence"])
+
             for clock in ("received", "event"):
-                incoming = activity[f"destination_{clock}"]
-
-                if (
-                    incoming["counterparties_5m"]
-                    >= p["recipient_prior_payers_5m"]
-                    and incoming["count_5m"] + 1
-                    >= p["recipient_count_5m"]
-                ):
-                    add("RECIPIENT_FAN_IN", {
-                        "scope": f"destination_{clock}",
-                        "prior_distinct_payers": (
-                            incoming["counterparties_5m"]
-                        ),
-                        "count_including_current": (
-                            incoming["count_5m"] + 1
-                        ),
-                    })
-
                 incoming = activity[f"source_incoming_{clock}"]
                 total = incoming["approved_amount_cents_5m"]
 
@@ -228,6 +220,7 @@ class RiskEngine:
                     "source_profile": profile["summary"],
                     "frequency_profile": velocity["summary"],
                     "device_profile": device["summary"],
+                    "recipient_profile": recipient["summary"],
                     "geography": geography["summary"],
                 },
             },
