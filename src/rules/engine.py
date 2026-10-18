@@ -58,8 +58,18 @@ RULES = {
 }
 
 
+REJECTION_SUPPORT_RULES = frozenset({
+    "SOURCE_BURST_1M",
+    "SOURCE_BURST_5M",
+    "SHARED_DEVICE",
+    "DEVICE_NOT_IN_RECENT_PROFILE",
+    "ACCESS_CONTEXT_CHANGE",
+    "RAPID_FORWARDING_PATTERN",
+})
+
+
 class RiskEngine:
-    policy_version = "sentinel24-1.6"
+    policy_version = "sentinel24-1.7"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -180,14 +190,13 @@ class RiskEngine:
 
         score = min(100, sum(families.values()))
 
-        strong_dynamic = any(
-            families.get(family, 0) >= p["strong_dynamic_points"]
-            for family in (
-                "velocity",
-                "access_context",
-                "network_flow",
-            )
-        )
+        rejection_support_codes = [
+            code
+            for code, signal in signals.items()
+            if code in REJECTION_SUPPORT_RULES
+            and signal["points"] >= p["strong_dynamic_points"]
+        ]
+        strong_dynamic = bool(rejection_support_codes)
 
         can_reject = (
             score >= p["rejection_score"]
@@ -213,6 +222,7 @@ class RiskEngine:
                 "signals": list(signals.values()),
                 "family_scores": families,
                 "strong_dynamic_signal": strong_dynamic,
+                "rejection_support_codes": rejection_support_codes,
                 "parameters": dict(p),
                 "context": {
                     "reference": context["reference"],

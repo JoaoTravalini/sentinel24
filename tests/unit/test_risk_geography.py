@@ -170,8 +170,10 @@ def test_geography_combines_with_value_and_recent_destination(
 
     result = decide(located)
 
-    assert result["status"] == "rejected"
+    assert result["status"] == "two_factor_required"
     assert result["metadata"]["risk_score"] == 80
+    assert result["metadata"]["strong_dynamic_signal"] is False
+    assert result["metadata"]["rejection_support_codes"] == []
 
 
 def test_geographic_explanation_does_not_export_coordinates(

@@ -2,9 +2,9 @@ from datetime import datetime
 from math import asin, cos, radians, sin, sqrt
 
 
+# Margens de política; não representam precisão medida do GPS.
 GEOGRAPHY_PARAMETERS = {
     "geo_lookback_hours": 24,
-    "geo_minimum_distance_km": 100,
     "geo_distance_tolerance_km": 30,
     "geo_time_tolerance_seconds": 120,
     "geo_maximum_speed_kmh": 1000,
@@ -90,12 +90,20 @@ def evaluate_geography(payload: dict, context: dict) -> dict:
         elapsed + p["geo_time_tolerance_seconds"]
     )
 
-    speed = effective_distance * 3600 / effective_seconds
-
-    suspicious = (
-        distance >= p["geo_minimum_distance_km"]
-        and speed > p["geo_maximum_speed_kmh"]
+    speed = (
+        effective_distance * 3600 / effective_seconds
+        if effective_seconds > 0
+        else None
     )
+
+    allowed_distance = (
+        p["geo_distance_tolerance_km"]
+        + p["geo_maximum_speed_kmh"]
+        * effective_seconds
+        / 3600
+    )
+
+    suspicious = distance > allowed_distance
 
     summary.update({
         "assessed": True,
@@ -107,7 +115,14 @@ def evaluate_geography(payload: dict, context: dict) -> dict:
         "previous_analysis_key": previous["key"],
         "elapsed_seconds": elapsed,
         "distance_km": round(distance, 2),
-        "effective_speed_kmh": round(speed, 2),
+        "allowed_distance_km": round(allowed_distance, 2),
+        "excess_distance_km": round(
+            max(0, distance - allowed_distance), 2
+        ),
+        "effective_speed_kmh": (
+            round(speed, 2) if speed is not None else None
+        ),
+        "evidence_kind": "declared_location_consistency",
     })
 
     if suspicious:
