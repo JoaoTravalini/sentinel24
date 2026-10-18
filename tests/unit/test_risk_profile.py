@@ -270,7 +270,7 @@ def test_rent_sized_payment_needs_context_beyond_value(
     assert result["status"] == status
     assert result["metadata"]["risk_score"] == score
     assert "PROFILE_AMOUNT_SPIKE" in result["metadata"]["reason_codes"]
-    assert result["metadata"]["policy_version"] == "sentinel24-1.8"
+    assert result["metadata"]["policy_version"] == "sentinel24-1.9"
 
 
 def test_absolute_and_relative_amount_signals_use_family_maximum(profiled):

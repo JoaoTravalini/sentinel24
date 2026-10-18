@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 
 from database import Context
 from models import PixAnalysis
@@ -13,6 +13,9 @@ from rules.geography import GEOGRAPHY_PARAMETERS
 from rules.velocity import FREQUENCY_PARAMETERS
 from rules.device import DEVICE_PARAMETERS
 from rules.recipient import RECIPIENT_PARAMETERS
+from rules.night_limit import (
+    assess_night_limit, night_limit_scope, source_account_key,
+)
 
 
 
@@ -62,6 +65,7 @@ class RiskContextRepository:
                 "includes_current": False,
             },
             "activity": activity,
+            "night_limit": self._night_limit(payload, observed_at),
             "source_profile": profile,
             "frequency_profile": self._frequency_profile(payload, observed_at),
             "device_profile": self._device_profile(
@@ -77,6 +81,39 @@ class RiskContextRepository:
                 observed_at,
             ),
         }
+
+    def _night_limit(self, payload: dict, observed_at: datetime) -> dict:
+        scope = night_limit_scope(payload, observed_at)
+        consumed = 0
+
+        if scope["applicable"]:
+            document, branch, account_number = source_account_key(payload)
+
+            consumed = self.session.query(
+                func.coalesce(func.sum(PixAnalysis.amount), 0)
+            ).filter(
+                PixAnalysis.source_document == document,
+                PixAnalysis.status == "approved",
+                func.length(PixAnalysis.destination_document) == 11,
+                func.btrim(
+                    PixAnalysis.raw_payload["source_account"]["branch"].astext
+                ) == branch,
+                func.btrim(
+                    PixAnalysis.raw_payload["source_account"]["account_number"].astext
+                ) == account_number,
+                PixAnalysis.received_at >= datetime.fromisoformat(
+                    scope["period_start"]
+                ),
+                PixAnalysis.received_at < datetime.fromisoformat(
+                    scope["period_end"]
+                ),
+                PixAnalysis.received_at <= observed_at,
+                PixAnalysis.pix_id != payload["id"],
+            ).scalar()
+
+        return assess_night_limit(
+            scope, payload["amount"], int(consumed)
+        )
 
     def _recipient_profile(
         self,

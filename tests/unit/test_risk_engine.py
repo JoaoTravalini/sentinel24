@@ -46,6 +46,10 @@ def scenario():
 
     context = {
         "reference": {"includes_current": False},
+        "night_limit": {
+            "applicable": False, "exceeded": False,
+            "reason": "OUTSIDE_NIGHT_PERIOD",
+        },
         "activity": {
             scope: dict.fromkeys(fields, 0)
             for scope in scopes

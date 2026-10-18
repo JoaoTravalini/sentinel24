@@ -68,13 +68,14 @@ REJECTION_SUPPORT_RULES = frozenset({
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.8"
+    policy_version = "sentinel24-1.9"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
         signals = {}
         activity = context["activity"]
         amount = payload["amount"]
+        night_limit = context["night_limit"]
         event_at = datetime.fromisoformat(payload["transaction_date"])
 
         same_owner = (
@@ -210,12 +211,23 @@ class RiskEngine:
         elif score >= p["two_factor_score"]:
             status = "two_factor_required"
 
+        operational_reasons = []
+        decision_basis = "risk_policy"
+
+        if night_limit["exceeded"]:
+            status = "rejected"
+            operational_reasons.append("NIGHT_LIMIT_EXCEEDED")
+            decision_basis = "operational_limit"
+
         return {
             "status": status,
             "metadata": {
                 "policy_version": self.policy_version,
                 "policy_ready": True,
                 "risk_score": score,
+                "decision_basis": decision_basis,
+                "operational_reason_codes": operational_reasons,
+                "operational_checks": {"night_limit": night_limit},
                 "score_kind": "heuristic_indicator_not_probability",
                 "reason_codes": list(signals),
                 "signals": list(signals.values()),
