@@ -35,7 +35,7 @@ def test_geography_with_static_factors_requires_step_up(isolated_payload):
     metadata = result["metadata"]
 
     assert result["status"] == "two_factor_required", result
-    assert metadata["policy_version"] == "sentinel24-1.9"
+    assert metadata["policy_version"] == "sentinel24-1.10"
     assert metadata["risk_score"] == 80
     assert metadata["strong_dynamic_signal"] is False
     assert metadata["rejection_support_codes"] == []

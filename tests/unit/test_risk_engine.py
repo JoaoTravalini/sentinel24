@@ -32,6 +32,12 @@ def scenario():
         "counterparties_5m",
         "approved_counterparties_5m",
         "approved_amount_cents_5m",
+        "approved_third_party_count_1h",
+        "approved_third_party_amount_cents_1h",
+        "approved_third_party_max_cents_1h",
+        "approved_third_party_count_24h",
+        "approved_third_party_amount_cents_24h",
+        "approved_third_party_max_cents_24h",
     )
 
     scopes = (

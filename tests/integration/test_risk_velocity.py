@@ -178,9 +178,11 @@ def test_normal_batch_is_approved_but_growth_still_requires_step_up(
 
     assert unusual["status"] == "two_factor_required"
     assert unusual["metadata"]["risk_score"] == 35
-    assert unusual["metadata"]["reason_codes"] == [
+    assert unusual["metadata"]["family_scores"] == {"velocity": 35}
+    assert set(unusual["metadata"]["reason_codes"]) == {
         "SOURCE_BURST_1M",
-    ]
+        "ACCUMULATED_AMOUNT_1H",
+    }
 
 
 def test_familiar_frequency_does_not_override_other_risk(history):

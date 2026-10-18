@@ -13,6 +13,9 @@ from rules.geography import GEOGRAPHY_PARAMETERS
 from rules.velocity import FREQUENCY_PARAMETERS
 from rules.device import DEVICE_PARAMETERS
 from rules.recipient import RECIPIENT_PARAMETERS
+from rules.accumulation import (
+    ACCUMULATION_PARAMETERS, needs_accumulation_reference,
+)
 from rules.night_limit import (
     assess_night_limit, night_limit_scope, source_account_key,
 )
@@ -67,6 +70,9 @@ class RiskContextRepository:
             "activity": activity,
             "night_limit": self._night_limit(payload, observed_at),
             "source_profile": profile,
+            "amount_profile": self._amount_profile(
+                payload, observed_at, activity
+            ),
             "frequency_profile": self._frequency_profile(payload, observed_at),
             "device_profile": self._device_profile(
                 payload,
@@ -114,6 +120,94 @@ class RiskContextRepository:
         return assess_night_limit(
             scope, payload["amount"], int(consumed)
         )
+
+    def _amount_profile(self, payload, observed_at, activity):
+        empty = {
+            "assessed": False, "sample_count": 0,
+            "observed_span_seconds": 0, "daily_peaks": [],
+        }
+
+        if not needs_accumulation_reference(payload, {"activity": activity}):
+            return empty
+
+        p = ACCUMULATION_PARAMETERS
+
+        rows = self.session.execute(text("""
+            WITH timestamps AS (
+                SELECT received_at,
+                       COUNT(*) AS samples,
+                       SUM(amount) AS total,
+                       MAX(amount) AS largest
+                FROM pix_analyses
+                WHERE source_document = :document
+                  AND source_document <> destination_document
+                  AND status = 'approved'
+                  AND pix_id <> :pix_id
+                  AND received_at >= :padded_start_at
+                  AND received_at < :end_at
+                GROUP BY received_at
+            ), rolling AS (
+                SELECT received_at, samples,
+                       SUM(total) OVER hour_window
+                           - MAX(largest) OVER hour_window AS adjusted_1h,
+                       SUM(total) OVER day_window
+                           - MAX(largest) OVER day_window AS adjusted_24h
+                FROM timestamps
+                WINDOW hour_window AS (
+                    ORDER BY received_at
+                    RANGE BETWEEN INTERVAL '1 hour' PRECEDING
+                    AND CURRENT ROW
+                ), day_window AS (
+                    ORDER BY received_at
+                    RANGE BETWEEN INTERVAL '24 hours' PRECEDING
+                    AND CURRENT ROW
+                )
+            ), eligible AS MATERIALIZED (
+                SELECT * FROM rolling WHERE received_at >= :start_at
+            ), daily AS (
+                SELECT (received_at AT TIME ZONE 'UTC')::date AS day,
+                       MAX(adjusted_1h) AS peak_adjusted_cents_1h,
+                       MAX(adjusted_24h) AS peak_adjusted_cents_24h
+                FROM eligible
+                GROUP BY (received_at AT TIME ZONE 'UTC')::date
+            ), coverage AS (
+                SELECT SUM(samples) AS sample_count,
+                       EXTRACT(EPOCH FROM (
+                           MAX(received_at) - MIN(received_at)
+                       )) AS observed_span_seconds
+                FROM eligible
+            )
+            SELECT daily.*, coverage.*
+            FROM daily CROSS JOIN coverage ORDER BY day
+        """), {
+            "document": payload["source_account"]["owner"]["document_number"],
+            "pix_id": payload["id"],
+            "start_at": observed_at - timedelta(
+                days=p["accumulation_lookback_days"]
+            ),
+            "padded_start_at": observed_at - timedelta(
+                days=p["accumulation_lookback_days"], hours=24
+            ),
+            "end_at": observed_at - timedelta(
+                hours=p["accumulation_exclusion_hours"]
+            ),
+        }).mappings().all()
+
+        if not rows:
+            return {**empty, "assessed": True}
+
+        return {
+            "assessed": True,
+            "sample_count": int(rows[0]["sample_count"]),
+            "observed_span_seconds": float(
+                rows[0]["observed_span_seconds"] or 0
+            ),
+            "daily_peaks": [{
+                "day": row["day"].isoformat(),
+                "peak_adjusted_cents_1h": int(row["peak_adjusted_cents_1h"]),
+                "peak_adjusted_cents_24h": int(row["peak_adjusted_cents_24h"]),
+            } for row in rows],
+        }
 
     def _recipient_profile(
         self,

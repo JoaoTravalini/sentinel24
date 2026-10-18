@@ -43,7 +43,7 @@ def context_ready(metadata):
     )
 
 
-def prepare_history(payloads, depth, *, vacuum=False):
+def prepare_history(payloads, depth, *, vacuum=False, accumulation=False):
     samples = {}
 
     for payload in payloads:
@@ -62,12 +62,19 @@ def prepare_history(payloads, depth, *, vacuum=False):
             sample["transaction_date"]
         )
 
-        for index in range(depth):
+        for index in range(depth + (2 if accumulation else 0)):
             timestamp = event_at - timedelta(
                 hours=1 + index * 6,
             )
 
+            if accumulation and index >= depth:
+                timestamp = event_at - timedelta(
+                    minutes=20 * (index - depth + 1)
+                )
+
             raw = deepcopy(sample)
+            if accumulation and index < depth:
+                raw["amount"] = 10_000
             raw["id"] = f"bench-history-{uuid4().hex}"
             raw["transaction_date"] = timestamp.isoformat()
 

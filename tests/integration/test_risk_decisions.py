@@ -314,7 +314,7 @@ def test_api_exports_frequency_limits_and_policy_version(
 ):
     result = create_analysis(isolated_payload)
 
-    assert result["metadata"]["policy_version"] == "sentinel24-1.9"
+    assert result["metadata"]["policy_version"] == "sentinel24-1.10"
 
     frequency = result["metadata"]["context"]["frequency_profile"]
 
@@ -334,7 +334,7 @@ def test_api_exports_recipient_reference(isolated_payload):
     result = create_analysis(isolated_payload)
     metadata = result["metadata"]
 
-    assert metadata["policy_version"] == "sentinel24-1.9"
+    assert metadata["policy_version"] == "sentinel24-1.10"
     assert metadata["parameters"]["recipient_peak_multiplier"] == 2
     recipient = metadata["context"]["recipient_profile"]
 

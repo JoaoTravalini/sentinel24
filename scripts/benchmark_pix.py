@@ -81,6 +81,7 @@ def main():
         "--workload",
         choices=(
             "independent", "same_payer", "shared_device", "same_recipient",
+            "accumulated_amount",
         ),
         default="independent",
     )
@@ -99,6 +100,10 @@ def main():
 
     if args.vacuum_history and not args.history:
         parser.error("--vacuum-history exige --history.")
+
+    accumulation = args.workload == "accumulated_amount"
+    if accumulation and args.history != 100:
+        parser.error("accumulated_amount exige --history 100.")
 
     base = (
         f"http://{os.environ.get('SERVER_LOCALHOST', '127.0.0.1')}:"
@@ -144,13 +149,19 @@ def main():
             ),
         ))
 
+    if accumulation:
+        for item in payloads:
+            item["amount"] = 90_000
+
     history_rows = 0
 
     if args.history:
         from benchmark_history import context_ready, prepare_history
 
         history_rows = prepare_history(
-            payloads, args.history, vacuum=args.vacuum_history
+            payloads, args.history,
+            vacuum=args.vacuum_history,
+            accumulation=accumulation,
         )
 
     def worker(items):
@@ -167,6 +178,7 @@ def main():
                 policy_version = None
                 device_history_checked = False
                 recipient_history_checked = False
+                amount_history_checked = False
 
                 try:
                     response = session.post(
@@ -204,6 +216,27 @@ def main():
                             )
                         )
 
+                        if valid and accumulation:
+                            metadata = body["metadata"]
+                            profile = metadata.get("context", {}).get(
+                                "amount_profile", {}
+                            )
+                            amount_history_checked = (
+                                profile.get("assessed") is True
+                                and profile.get("mature") is True
+                            )
+                            valid = (
+                                amount_history_checked
+                                and body["status"] == "two_factor_required"
+                                and metadata.get("risk_score") == 35
+                                and metadata.get("family_scores")
+                                == {"velocity": 35}
+                                and set(metadata.get("reason_codes", [])) == {
+                                    "ACCUMULATED_AMOUNT_1H",
+                                    "ACCUMULATED_AMOUNT_24H",
+                                }
+                            )
+
                         if valid:
                             decision = body["status"]
                             policy_version = (
@@ -239,6 +272,7 @@ def main():
                     policy_version,
                     device_history_checked,
                     recipient_history_checked,
+                    amount_history_checked,
                 ))
 
         return results
@@ -272,6 +306,9 @@ def main():
         "requires_mature_profile_and_geo": bool(args.history),
         "device_history_checks": sum(row[5] for row in results),
         "recipient_history_checks": sum(row[6] for row in results),
+        "amount_history_checks": sum(row[7] for row in results),
+        "requires_mature_amount_profile": accumulation,
+        "recent_amount_rows_per_payer": 2 if accumulation else 0,
         "requests": args.requests,
         "concurrency": concurrency,
         "duration_s": round(duration, 2),
@@ -301,7 +338,7 @@ def main():
         "budget_ms": args.budget_ms,
         "valid_within_budget": sum(
             1
-            for elapsed, _, decision, error, _, _, _ in results
+            for elapsed, _, decision, error, _, _, _, _ in results
             if (
                 error is None
                 and decision is not None

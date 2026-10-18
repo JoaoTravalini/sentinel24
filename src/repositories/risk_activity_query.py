@@ -25,6 +25,11 @@ def _scope_query(
     minute = clock_column >= timestamp("1m")
     five_minutes = clock_column >= timestamp("5m")
     hour = clock_column >= timestamp("1h")
+    third_party = and_(
+        PixAnalysis.status == "approved",
+        PixAnalysis.source_document != PixAnalysis.destination_document,
+    )
+    third_party_hour = and_(third_party, hour)
 
     approved = and_(
         five_minutes, PixAnalysis.status == "approved"
@@ -58,6 +63,20 @@ def _scope_query(
         amount(approved).label("approved_amount_cents_5m"),
         func.count(func.distinct(counterpart))
         .filter(approved).label("approved_counterparties_5m"),
+        func.count().filter(third_party_hour)
+        .label("approved_third_party_count_1h"),
+        amount(third_party_hour)
+        .label("approved_third_party_amount_cents_1h"),
+        func.coalesce(
+            func.max(PixAnalysis.amount).filter(third_party_hour), 0
+        ).label("approved_third_party_max_cents_1h"),
+        func.count().filter(third_party)
+        .label("approved_third_party_count_24h"),
+        amount(third_party)
+        .label("approved_third_party_amount_cents_24h"),
+        func.coalesce(
+            func.max(PixAnalysis.amount).filter(third_party), 0
+        ).label("approved_third_party_max_cents_24h"),
         func.count().filter(rejected)
         .label("rejected_count_5m"),
     ).where(

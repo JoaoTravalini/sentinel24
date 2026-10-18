@@ -1,5 +1,9 @@
 from datetime import datetime
 
+from rules.accumulation import (
+    ACCUMULATION_PARAMETERS, ACCUMULATION_RULES, evaluate_accumulation,
+)
+
 from rules.profile import (
     PROFILE_PARAMETERS,
     PROFILE_RULES,
@@ -27,6 +31,7 @@ PARAMETERS = {
     **DEVICE_PARAMETERS,
     **FREQUENCY_PARAMETERS,
     **RECIPIENT_PARAMETERS,
+    **ACCUMULATION_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
@@ -47,6 +52,7 @@ RULES = {
     **GEOGRAPHY_RULES,
     **DEVICE_RULES,
     **RECIPIENT_RULES,
+    **ACCUMULATION_RULES,
     "SOURCE_BURST_1M": ("velocity", 35),
     "SOURCE_BURST_5M": ("velocity", 45),
     "HIGH_AMOUNT": ("transaction_value", 20),
@@ -68,7 +74,7 @@ REJECTION_SUPPORT_RULES = frozenset({
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.9"
+    policy_version = "sentinel24-1.10"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -179,6 +185,11 @@ class RiskEngine:
         for signal in geography["signals"]:
             add(signal["code"], signal["evidence"])
 
+        accumulation = evaluate_accumulation(payload, context)
+
+        for signal in accumulation["signals"]:
+            add(signal["code"], signal["evidence"])
+
         families = {}
 
         for signal in signals.values():
@@ -239,6 +250,7 @@ class RiskEngine:
                     "reference": context["reference"],
                     "activity": activity,
                     "source_profile": profile["summary"],
+                    "amount_profile": accumulation["summary"],
                     "frequency_profile": velocity["summary"],
                     "device_profile": device["summary"],
                     "recipient_profile": recipient["summary"],
