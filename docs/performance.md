@@ -8,28 +8,32 @@ Alvo experimental interno: decisão válida em até 2.000 ms. Esse alvo não rep
 
 ## Resultado mais recente: política sentinel24-1.10
 
-Cenário `accumulated_amount`: 200 pagadores, destinatários e dispositivos independentes; concorrência oito. Cada titular recebe 100 registros históricos de R$ 100 e dois pagamentos recentes de R$ 900, observados 20 e 40 minutos antes do instante de preparação. A solicitação medida é outro pagamento de R$ 900.
+Cenário `accumulated_amount`, medido em duas execuções: primeiro com oito clientes concorrentes e depois com um. Cada execução enviou 200 solicitações de pagadores, destinatários e dispositivos independentes.
 
-Foram preparados 20.400 registros sintéticos antes da medição HTTP. A preparação executou ANALYZE, sem VACUUM explícito. As 200 respostas confirmaram perfil de valores maduro, comparação geográfica avaliada e referência de acúmulo avaliada e madura. Também confirmaram score 35 somente em `velocity`, os sinais `ACCUMULATED_AMOUNT_1H` e `ACCUMULATED_AMOUNT_24H` e status `two_factor_required`.
+Cada titular recebeu 100 registros históricos de R$ 100 e dois pagamentos recentes de R$ 900, observados 20 e 40 minutos antes do instante de preparação. A solicitação medida foi outro pagamento de R$ 900. Foram preparados 20.400 registros sintéticos por execução, com ANALYZE e sem VACUUM explícito, antes da medição HTTP.
 
-| Medida | Resultado |
-|---|---:|
-| Solicitações / concorrência | 200 / 8 |
-| Histórico preparado | 20.400 |
-| HTTP 201 válidos | 200 |
-| Erros reportados | 0 |
-| Referência de acúmulo avaliada e madura | 200 respostas |
-| Decisões válidas em até 2.000 ms | 200 |
-| Duração HTTP | 12,31 s |
-| Decisões válidas/s | 16,24 |
-| p50 | 425,85 ms |
-| p95 | 883,21 ms |
-| p99 | 1.572,60 ms |
-| Máximo | 1.609,77 ms |
+Em ambas as execuções, as 200 respostas confirmaram perfil de valores maduro, comparação geográfica avaliada e referência de acúmulo avaliada e madura. Também confirmaram score 35 somente em `velocity`, os sinais `ACCUMULATED_AMOUNT_1H` e `ACCUMULATED_AMOUNT_24H` e status `two_factor_required`.
 
-Os documentos dos pagadores são CNPJ sintéticos; o limite noturno PF para PF não se aplica a esse cenário. Os perfis de compartilhamento de dispositivo e concentração do destinatário não foram avaliados. Esse ensaio exercita o caminho de acúmulo com histórico maduro; não é um teste de todas as regras simultaneamente nem um cenário de contenção no mesmo destinatário.
+| Medida | Concorrência 1 | Concorrência 8 |
+|---|---:|---:|
+| Solicitações | 200 | 200 |
+| Histórico preparado por execução | 20.400 | 20.400 |
+| HTTP 201 válidos | 200 | 200 |
+| Erros reportados | 0 | 0 |
+| Referência de acúmulo avaliada e madura | 200 respostas | 200 respostas |
+| Decisões válidas em até 2.000 ms | 200 | 200 |
+| Duração HTTP | 17,11 s | 12,31 s |
+| Decisões válidas/s | 11,69 | 16,24 |
+| p50 | 71,75 ms | 425,85 ms |
+| p95 | 131,07 ms | 883,21 ms |
+| p99 | 203,81 ms | 1.572,60 ms |
+| Máximo | 971,37 ms | 1.609,77 ms |
 
-Não houve erro ou resposta acima do alvo interno nessa execução. O resultado não caracteriza capacidade máxima, SLA ou precisão antifraude e não substitui os ensaios históricos de contenção.
+O p99 é o tempo dentro do qual terminaram 99% das solicitações medidas. Com 200 observações e o método nearest rank, corresponde à 198ª latência ordenada, não ao máximo.
+
+Com um cliente, as latências observadas foram menores. Com oito, a vazão observada foi maior. São duas execuções locais em ciclo fechado; não estabelecem uma latência fixa, capacidade máxima ou SLA. Ordem, cache, carga da máquina e crescimento da base também podem influenciar os resultados. A amostra de 200 solicitações por execução é limitada para caracterizar a cauda de latência.
+
+Os documentos dos pagadores são CNPJ sintéticos; o limite noturno PF para PF não se aplica a esse cenário. Os perfis de compartilhamento de dispositivo e concentração do destinatário não foram avaliados. O ensaio exercita acúmulo com histórico maduro e não substitui os cenários históricos de contenção.
 
 ## Histórico: política sentinel24-1.6
 
@@ -160,6 +164,7 @@ As 1.200 solicitações produziram HTTP 201 válidos, sem erros reportados e den
 Acúmulo financeiro, exigindo referência madura e a decisão esperada em cada resposta:
 
 ```bash
+PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 1 --workload accumulated_amount --history 100
 PYTHONPATH=src python scripts/benchmark_pix.py --requests 200 --concurrency 8 --workload accumulated_amount --history 100
 ```
 
