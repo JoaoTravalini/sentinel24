@@ -12,16 +12,16 @@ from rules.geography import (
     evaluate_geography,
 )
 
+from rules.velocity import FREQUENCY_PARAMETERS, evaluate_velocity
 
 PARAMETERS = {
+    **FREQUENCY_PARAMETERS,
     **PROFILE_PARAMETERS,
     **GEOGRAPHY_PARAMETERS,
     "two_factor_score": 35,
     "rejection_score": 70,
     "minimum_rejection_families": 2,
     "strong_dynamic_points": 30,
-    "burst_1m_count": 8,
-    "burst_5m_count": 20,
     "high_amount_cents": 500_000,
     "very_high_amount_cents": 2_000_000,
     "source_recent_hours": 168,
@@ -53,7 +53,7 @@ RULES = {
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.3"
+    policy_version = "sentinel24-1.4"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS
@@ -81,18 +81,10 @@ class RiskEngine:
 
         # Analisa o horário informado e o horário observado pelo servidor.
         # A solicitação atual ainda não está no histórico: acrescentamos 1.
-        for scope in ("source_received", "source_event"):
-            for window, threshold, code in (
-                ("1m", p["burst_1m_count"], "SOURCE_BURST_1M"),
-                ("5m", p["burst_5m_count"], "SOURCE_BURST_5M"),
-            ):
-                count = activity[scope][f"count_{window}"] + 1
+        velocity = evaluate_velocity(context, p)
 
-                if count >= threshold:
-                    add(code, {
-                        "scope": scope,
-                        "count_including_current": count,
-                    })
+        for signal in velocity["signals"]:
+            add(signal["code"], signal["evidence"])
 
         for threshold, code in (
             (p["high_amount_cents"], "HIGH_AMOUNT"),
@@ -236,6 +228,7 @@ class RiskEngine:
                     "reference": context["reference"],
                     "activity": activity,
                     "source_profile": profile["summary"],
+                    "frequency_profile": velocity["summary"],
                     "geography": geography["summary"],
                 },
             },

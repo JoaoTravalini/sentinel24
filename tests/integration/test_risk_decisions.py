@@ -308,3 +308,19 @@ def test_different_devices_do_not_create_a_false_travel_alarm(
             "assessed"
         ] is False
     )
+
+def test_api_exports_frequency_limits_and_policy_version(
+    isolated_payload
+):
+    result = create_analysis(isolated_payload)
+
+    assert result["metadata"]["policy_version"] == "sentinel24-1.4"
+
+    frequency = result["metadata"]["context"]["frequency_profile"]
+
+    for clock in ("received", "event"):
+        assert frequency[clock]["mature"] is False
+        assert frequency[clock]["effective_limits"] == {
+            "1m": 8,
+            "5m": 20,
+        }

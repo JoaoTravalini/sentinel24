@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, func, literal, select, union_all
+from sqlalchemy import and_, func, literal, select, text, union_all
 
 from database import Context
 from models import PixAnalysis
 from rules.geography import GEOGRAPHY_PARAMETERS
+
+from rules.velocity import FREQUENCY_PARAMETERS
 
 
 class RiskContextRepository:
@@ -192,10 +194,137 @@ class RiskContextRepository:
             },
             "activity": activity,
             "source_profile": profile,
+            "frequency_profile": self._frequency_profile(payload, observed_at),
             "previous_location": self._previous_location(
                 payload,
                 observed_at,
             ),
+        }
+
+    def _frequency_profile(
+        self,
+        payload: dict,
+        observed_at: datetime,
+    ) -> dict:
+        p = FREQUENCY_PARAMETERS
+        event_at = datetime.fromisoformat(payload["transaction_date"])
+        lookback = timedelta(days=p["frequency_lookback_days"])
+        quarantine = timedelta(hours=p["frequency_exclusion_hours"])
+
+        rows = self.session.execute(
+            text("""
+                WITH observations AS (
+                    SELECT 'received' AS clock,
+                           received_at AS occurred_at,
+                           received_at AS observed_at
+                    FROM pix_analyses
+                    WHERE source_document = :document
+                      AND device_id = :device
+                      AND status = 'approved'
+                      AND pix_id <> :pix_id
+                      AND received_at >= :received_start - INTERVAL '5 minutes'
+                      AND received_at < :received_end
+
+                    UNION ALL
+
+                    SELECT 'event' AS clock,
+                           transaction_at AS occurred_at,
+                           received_at AS observed_at
+                    FROM pix_analyses
+                    WHERE source_document = :document
+                      AND device_id = :device
+                      AND status = 'approved'
+                      AND pix_id <> :pix_id
+                      AND transaction_at >= :event_start - INTERVAL '5 minutes'
+                      AND transaction_at < :event_end
+                      AND received_at >= :received_start
+                      AND received_at < :received_end
+                ), window_counts AS (
+                    SELECT clock, occurred_at, observed_at,
+                           COUNT(*) OVER (
+                               PARTITION BY clock ORDER BY occurred_at
+                               RANGE BETWEEN INTERVAL '1 minute' PRECEDING
+                               AND CURRENT ROW
+                           ) AS count_1m,
+                           COUNT(*) OVER (
+                               PARTITION BY clock ORDER BY occurred_at
+                               RANGE BETWEEN INTERVAL '5 minutes' PRECEDING
+                               AND CURRENT ROW
+                           ) AS count_5m
+                    FROM observations
+                ), eligible AS (
+                    SELECT *
+                    FROM window_counts
+                    WHERE (
+                        clock = 'received'
+                        AND occurred_at >= :received_start
+                    ) OR (
+                        clock = 'event'
+                        AND occurred_at >= :event_start
+                    )
+                ), daily AS (
+                    SELECT clock,
+                           (occurred_at AT TIME ZONE 'UTC')::date AS day,
+                           MAX(count_1m) AS peak_1m,
+                           MAX(count_5m) AS peak_5m
+                    FROM eligible
+                    GROUP BY clock, (occurred_at AT TIME ZONE 'UTC')::date
+                ), coverage AS (
+                    SELECT clock,
+                           COUNT(DISTINCT (
+                               observed_at AT TIME ZONE 'UTC'
+                           )::date) AS observed_days,
+                           EXTRACT(EPOCH FROM (
+                               MAX(observed_at) - MIN(observed_at)
+                           )) AS observed_span_seconds
+                    FROM eligible
+                    GROUP BY clock
+                )
+                SELECT daily.*, coverage.observed_days,
+                       coverage.observed_span_seconds
+                FROM daily
+                JOIN coverage USING (clock)
+                ORDER BY clock, day
+            """),
+            {
+                "document": (
+                    payload["source_account"]["owner"]["document_number"]
+                ),
+                "device": payload["source"]["device_id"],
+                "pix_id": payload["id"],
+                "received_start": observed_at - lookback,
+                "received_end": observed_at - quarantine,
+                "event_start": event_at - lookback,
+                "event_end": event_at - quarantine,
+            },
+        ).mappings().all()
+
+        clocks = {
+            clock: {
+                "daily_peaks": [],
+                "observed_days": 0,
+                "observed_span_seconds": 0,
+            }
+            for clock in ("received", "event")
+        }
+
+        for row in rows:
+            profile = clocks[row["clock"]]
+
+            profile["daily_peaks"].append({
+                "day": row["day"].isoformat(),
+                "peak_1m": int(row["peak_1m"]),
+                "peak_5m": int(row["peak_5m"]),
+            })
+            profile["observed_days"] = int(row["observed_days"])
+            profile["observed_span_seconds"] = float(
+                row["observed_span_seconds"]
+            )
+
+        return {
+            "lookback_days": p["frequency_lookback_days"],
+            "excluded_recent_hours": p["frequency_exclusion_hours"],
+            "clocks": clocks,
         }
 
     def _source_profile(
