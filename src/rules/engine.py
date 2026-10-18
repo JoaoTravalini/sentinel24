@@ -62,14 +62,13 @@ REJECTION_SUPPORT_RULES = frozenset({
     "SOURCE_BURST_1M",
     "SOURCE_BURST_5M",
     "SHARED_DEVICE",
-    "DEVICE_NOT_IN_RECENT_PROFILE",
     "ACCESS_CONTEXT_CHANGE",
     "RAPID_FORWARDING_PATTERN",
 })
 
 
 class RiskEngine:
-    policy_version = "sentinel24-1.7"
+    policy_version = "sentinel24-1.8"
 
     def evaluate(self, payload: dict, context: dict) -> dict:
         p = PARAMETERS

@@ -22,7 +22,7 @@ def test_geography_and_velocity_can_support_rejection(located):
 
 @pytest.mark.parametrize("new_device,status,support", [
     (False, "two_factor_required", []),
-    (True, "rejected", ["DEVICE_NOT_IN_RECENT_PROFILE"]),
+    (True, "two_factor_required", []),
 ])
 def test_geography_requires_qualifying_access_evidence(
     located, new_device, status, support
